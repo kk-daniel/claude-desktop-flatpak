@@ -1,0 +1,8 @@
+{
+  "name": "claude-flatpak-build-tools",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@electron/asar": "^4.0.0"
+  }
+}

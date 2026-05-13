@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Claude
+Comment=Claude Desktop
+Exec=claude %u
+Icon=ai.claude.Claude
+Type=Application
+Terminal=false
+Categories=Office;Utility;Network;
+MimeType=x-scheme-handler/claude;
+StartupWMClass=Claude

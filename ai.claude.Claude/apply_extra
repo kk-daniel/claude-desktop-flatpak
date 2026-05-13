@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app_id="ai.claude.Claude"
+work_dir="$(mktemp -d)"
+trap 'rm -rf "$work_dir"' EXIT
+
+cd /app/extra
+
+installer=""
+for candidate in Claude-Setup-x64.exe Claude-Setup-arm64.exe; do
+  if [ -f "$candidate" ]; then
+    installer="$candidate"
+    break
+  fi
+done
+
+if [ -z "$installer" ]; then
+  echo "Claude installer not found in /app/extra" >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64) claude_arch="amd64"; resource_arch="x64" ;;
+  aarch64) claude_arch="arm64"; resource_arch="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+rm -rf claude/resources
+mkdir -p claude/resources "$work_dir/exe" "$work_dir/app"
+
+7z x -y "$installer" -o"$work_dir/exe" >/dev/null
+nupkg="$(find "$work_dir/exe" -maxdepth 1 -name 'AnthropicClaude-*.nupkg' | head -n 1)"
+if [ -z "$nupkg" ]; then
+  echo "AnthropicClaude nupkg not found in installer" >&2
+  exit 1
+fi
+
+7z x -y "$nupkg" -o"$work_dir/nupkg" >/dev/null
+resources="$work_dir/nupkg/lib/net45/resources"
+if [ ! -f "$resources/app.asar" ]; then
+  echo "Claude app.asar not found in nupkg" >&2
+  exit 1
+fi
+
+mkdir -p claude/resources
+cp "$resources/app.asar" "$work_dir/app/app.asar"
+cp -a "$resources/app.asar.unpacked" "$work_dir/app/app.asar.unpacked"
+cd "$work_dir/app"
+
+asar extract app.asar app.asar.contents
+node_bin="/app/share/node/bin/node"
+
+original_main="$("$node_bin" -e "const p=require('./app.asar.contents/package.json'); console.log(p.main || 'index.js')")"
+cp /app/share/claude/frame-fix-wrapper.js app.asar.contents/frame-fix-wrapper.js
+# frame-fix-entry.js + package.json transform (originalMain/main/desktopName/
+# optionalDependencies['node-pty']) below are from claude-desktop-debian
+# scripts/patches/app-asar.sh (speleoalex 7882635 + aaddrick 3591392 node-pty).
+cat > app.asar.contents/frame-fix-entry.js <<EOF
+process.on('uncaughtException', (error) => {
+  console.error('[claude-flatpak] uncaughtException:',
+    error && error.stack ? error.stack : error);
+});
+process.on('unhandledRejection', (error) => {
+  console.error('[claude-flatpak] unhandledRejection:',
+    error && error.stack ? error.stack : error);
+});
+require('./frame-fix-wrapper.js');
+require('./${original_main}');
+EOF
+
+"$node_bin" - "$app_id.desktop" <<'EOF'
+const fs = require('fs');
+const desktopName = process.argv[2];
+const path = './app.asar.contents/package.json';
+const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+pkg.originalMain = pkg.main;
+pkg.main = 'frame-fix-entry.js';
+pkg.desktopName = desktopName;
+pkg.optionalDependencies = pkg.optionalDependencies || {};
+pkg.optionalDependencies['node-pty'] = '^1.0.0';
+fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
+EOF
+
+mkdir -p app.asar.contents/node_modules/@ant/claude-native
+cp /app/share/claude/claude-native-stub.js app.asar.contents/node_modules/@ant/claude-native/index.js
+
+mkdir -p app.asar.contents/resources/i18n
+cp "$resources"/*-*.json app.asar.contents/resources/i18n/ 2>/dev/null || true
+cp "$resources"/Tray* app.asar.contents/resources/ 2>/dev/null || true
+cp /app/share/claude/wco-shim.js app.asar.contents/wco-shim.js
+cp /app/share/claude/cowork-vm-service.js app.asar.contents/cowork-vm-service.js
+
+index_js="app.asar.contents/.vite/build/index.js"
+if [ -f "$index_js" ]; then
+  "$node_bin" - "$index_js" <<'EOF'
+const fs = require('fs');
+const path = process.argv[2];
+let s = fs.readFileSync(path, 'utf8');
+// Linux platform regex patches (both formats) from claude-desktop-debian
+// scripts/patches/claude-code.sh (jacobfrantz1 5c5eb39 legacy form, IliyaBrook
+// db11bd0 arch-aware form).
+s = s.replace(
+  /if\(process\.platform==="win32"\)return (\w+)==="arm64"\?"win32-arm64":"win32-x64";throw/,
+  'if(process.platform==="win32")return $1==="arm64"?"win32-arm64":"win32-x64";if(process.platform==="linux")return $1==="arm64"?"linux-arm64":"linux-x64";throw'
+);
+s = s.replace(
+  /if\(process\.platform==="win32"\)return"win32-x64";/,
+  'if(process.platform==="win32")return"win32-x64";if(process.platform==="linux")return process.arch==="arm64"?"linux-arm64":"linux-x64";'
+);
+// Tray icon variant on Linux. Names are misleading:
+//   TrayIconTemplate.png      = black glyph (visible on LIGHT panels)
+//   TrayIconTemplate-Dark.png = white glyph (visible on DARK panels)
+// Most modern Linux panels are dark, and nativeTheme.shouldUseDarkColors
+// is unreliable on KDE Plasma (the GTK color-scheme signal doesn't
+// always match the panel theme). Default to the white glyph and let
+// users override with CLAUDE_TRAY_ICON=dark|light|auto. 'auto' falls
+// back to the upstream nativeTheme check.
+s = s.replace(
+  /(:\$?\w+=)"TrayIconTemplate\.png"/g,
+  '$1(()=>{if(process.platform!=="linux")return"TrayIconTemplate.png";'
+  + 'const v=(process.env.CLAUDE_TRAY_ICON||"dark").toLowerCase();'
+  + 'if(v==="light")return"TrayIconTemplate.png";'
+  + 'if(v==="auto")return require("electron").nativeTheme.shouldUseDarkColors'
+  + '?"TrayIconTemplate-Dark.png":"TrayIconTemplate.png";'
+  + 'return"TrayIconTemplate-Dark.png"})()'
+);
+
+// Tray destroy/rebuild race fix. Mutex + 250ms cleanup delay are from
+// aaddrick/claude-desktop-debian@1bb05df (Wayland tray-menu fix, #135);
+// the 3-second startup-burst skip is from @bbf3b99 (#163). MIT licensed
+// — see LICENSE for attribution.
+//   1. Mutex guard so nativeTheme bursts don't queue concurrent rebuilds.
+//   2. 250ms delay after Tray.destroy() so DBus has time to drop the old
+//      org.kde.StatusNotifierItem object paths before the next Tray()
+//      tries to export them — without this, KDE/Plasma rejects the
+//      registration with "Activate is already exported" and no icon
+//      appears.
+//   3. Skip the first 3s of nativeTheme events (startup burst).
+const trayFunc = (s.match(/on\("menuBarEnabled",\(\)=>\{(\w+)\(\)\}/) || [])[1];
+if (trayFunc) {
+  const trayVarMatch = new RegExp(
+    '\\}\\);let (\\w+)=null;(?:async )?function ' + trayFunc
+  );
+  const trayVar = (s.match(trayVarMatch) || [])[1];
+  if (trayVar) {
+    // Make the function async so we can await a delay after destroy().
+    s = s.replace(
+      new RegExp('function ' + trayFunc + '\\(\\)\\{', 'g'),
+      'async function ' + trayFunc + '(){'
+    );
+    // Mutex guard: drop reentrant calls within a 1.5s window.
+    if (!s.includes(trayFunc + '._running')) {
+      s = s.replace(
+        new RegExp('async function ' + trayFunc + '\\(\\)\\{', 'g'),
+        'async function ' + trayFunc + '(){if(' + trayFunc + '._running)return;' + trayFunc + '._running=true;setTimeout(()=>' + trayFunc + '._running=false,1500);'
+      );
+    }
+    // 250ms cleanup delay after destroy.
+    const destroyEsc = trayVar.replace(/\$/g, '\\$');
+    const destroyRe = new RegExp(
+      destroyEsc + '&&\\(' + destroyEsc + '\\.destroy\\(\\),' +
+      destroyEsc + '=null\\)'
+    );
+    s = s.replace(
+      destroyRe,
+      trayVar + '&&(' + trayVar + '.destroy(),' + trayVar + '=null,await new Promise(r=>setTimeout(r,250)))'
+    );
+    // Skip nativeTheme-triggered rebuilds for the first 3 seconds.
+    if (!s.includes('_trayStartTime')) {
+      s = s.replace(
+        /(\w+\.nativeTheme\.on\("updated",\(\)=>\{)/,
+        'let _trayStartTime=Date.now();$1'
+      );
+      s = s.replace(
+        new RegExp('\\((\\w+\\([^)]*\\)),' + trayFunc + '\\(\\),', 'g'),
+        '($1,Date.now()-_trayStartTime>3e3&&' + trayFunc + '(),'
+      );
+    }
+  }
+}
+
+// menuBarEnabled default-to-true patch from claude-desktop-debian
+// scripts/patches/tray.sh::patch_menu_bar_default (aaddrick). The stock
+// !!menuBarEnabled check fails when the pref is undefined, so the tray is
+// never created on a fresh install. Rewrite to `var !== false` so the
+// default behavior is tray-on.
+const menuBarVarMatch = s.match(/const (\w+)=\w+\("menuBarEnabled"\)/);
+if (menuBarVarMatch) {
+  const menuBarVar = menuBarVarMatch[1];
+  s = s.replace(
+    new RegExp(',\\s*!!' + menuBarVar + '\\s*\\)', 'g'),
+    ',' + menuBarVar + '!==false)'
+  );
+}
+fs.writeFileSync(path, s);
+EOF
+fi
+
+asar pack app.asar.contents app.asar --unpack '**/*.node'
+mkdir -p app.asar.unpacked/node_modules/@ant/claude-native
+cp /app/share/claude/claude-native-stub.js app.asar.unpacked/node_modules/@ant/claude-native/index.js
+cp /app/share/claude/cowork-vm-service.js app.asar.unpacked/cowork-vm-service.js
+
+cp app.asar /app/extra/claude/resources/app.asar
+cp -a app.asar.unpacked /app/extra/claude/resources/app.asar.unpacked
+
+ssh_src="$resources/claude-ssh"
+if [ -d "$ssh_src" ]; then
+  mkdir -p /app/extra/claude/resources/claude-ssh
+  cp "$ssh_src/version.txt" /app/extra/claude/resources/claude-ssh/ 2>/dev/null || true
+  cp "$ssh_src/claude-ssh-linux-$claude_arch" /app/extra/claude/resources/claude-ssh/ 2>/dev/null || true
+  chmod +x /app/extra/claude/resources/claude-ssh/claude-ssh-linux-"$claude_arch" 2>/dev/null || true
+fi
+
+# Locale JSON files. The packaged-mode loader reads readdirSync(process.resourcesPath)
+# directly (filters on /[a-z]{2}-[A-Z]{2}/), so the *.json files must live next to
+# app.asar — not inside it. Without this copy, every menu item logs MISSING_TRANSLATION
+# and the UI falls back to defaultMessage.
+cp "$resources"/*-*.json /app/extra/claude/resources/ 2>/dev/null || true
+cp "$resources"/Tray* /app/extra/claude/resources/ 2>/dev/null || true
+cp "$resources"/smol-bin."$resource_arch".vhdx /app/extra/claude/resources/ 2>/dev/null || true
+cp "$resources"/cowork-plugin-shim.sh /app/extra/claude/resources/ 2>/dev/null || true
+if [ -f /app/extra/claude/resources/cowork-plugin-shim.sh ]; then
+  sed -i 's/\r$//' /app/extra/claude/resources/cowork-plugin-shim.sh
+  chmod +x /app/extra/claude/resources/cowork-plugin-shim.sh
+fi
+cp -a "$resources"/ion-dist /app/extra/claude/resources/ 2>/dev/null || true
+
+if command -v wrestool >/dev/null 2>&1 && command -v icotool >/dev/null 2>&1; then
+  cd "$work_dir/nupkg"
+  wrestool -x -t 14 lib/net45/claude.exe -o "$work_dir/claude.ico" 2>/dev/null || true
+  icotool -x "$work_dir/claude.ico" -o "$work_dir/icons" 2>/dev/null || true
+  best_icon="$(find "$work_dir/icons" -name '*.png' 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [ -n "$best_icon" ]; then
+    install -Dm644 "$best_icon" "/app/extra/claude/resources/$app_id.png"
+  fi
+fi
+
+rm -f /app/extra/Claude-Setup-x64.exe /app/extra/Claude-Setup-arm64.exe
+echo "Claude Desktop extra data installed"

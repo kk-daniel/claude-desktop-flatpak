@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Claude URL Handler
+Comment=Handle Claude login links
+Exec=claude %u
+Icon=ai.claude.Claude
+Type=Application
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/claude;
