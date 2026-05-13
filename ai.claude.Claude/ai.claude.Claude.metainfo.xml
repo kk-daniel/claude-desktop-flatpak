@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>ai.claude.Claude</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>LicenseRef-proprietary=https://claude.ai/legal/consumer-terms</project_license>
+  <name>Claude</name>
+  <summary>Claude Desktop</summary>
+  <description>
+    <p>
+      Claude Desktop is Anthropic's desktop client for Claude.
+    </p>
+  </description>
+  <launchable type="desktop-id">ai.claude.Claude.desktop</launchable>
+  <url type="homepage">https://claude.ai</url>
+  <developer_name>Anthropic</developer_name>
+  <categories>
+    <category>Office</category>
+    <category>Utility</category>
+    <category>Network</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.6608.0" date="2026-05-08"/>
+  </releases>
+</component>

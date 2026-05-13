@@ -1,0 +1,106 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "platformAutomerge": false,
+  "packageRules": [
+    {
+      "description": "Claude Desktop",
+      "groupName": "claude",
+      "matchPackageNames": ["claude-desktop"],
+      "automerge": true
+    },
+    {
+      "description": "7-Zip",
+      "groupName": "7zip",
+      "matchPackageNames": ["7zip", "ip7z/7zip"],
+      "automerge": true
+    },
+    {
+      "description": "Electron",
+      "groupName": "electron",
+      "matchPackageNames": ["electron", "electron/electron"],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Claude Desktop installer URLs",
+      "managerFilePatterns": [
+        "/\\/ai\\.claude\\.Claude\\.yaml$/"
+      ],
+      "matchStrings": [
+        "url: https://downloads\\.claude\\.ai/releases/win32/(?:x64|arm64)/(?<currentValue>[\\d.]+)/Claude-[a-f0-9]+\\.exe"
+      ],
+      "depNameTemplate": "claude-desktop",
+      "datasourceTemplate": "custom.claude-desktop",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "7-Zip Linux archive URLs",
+      "managerFilePatterns": [
+        "/\\/ai\\.claude\\.Claude\\.yaml$/"
+      ],
+      "matchStrings": [
+        "url: https://github\\.com/ip7z/7zip/releases/download/(?<currentValue>[\\d.]+)/7z\\d+-linux-(?<arch>x64|arm64)\\.tar\\.xz"
+      ],
+      "depNameTemplate": "7zip",
+      "packageNameTemplate": "ip7z/7zip",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "url: https://github.com/ip7z/7zip/releases/download/{{{newValue}}}/7z{{{replace '\\.' '' newValue}}}-linux-{{{arch}}}.tar.xz"
+    },
+    {
+      "customType": "regex",
+      "description": "Electron release archive URLs",
+      "managerFilePatterns": [
+        "/\\/ai\\.claude\\.Claude\\.yaml$/"
+      ],
+      "matchStrings": [
+        "url: https://github\\.com/electron/electron/releases/download/v(?<currentValue>[\\d.]+)/electron-v[\\d.]+-linux-(?<arch>x64|arm64)\\.zip"
+      ],
+      "depNameTemplate": "electron",
+      "packageNameTemplate": "electron/electron",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "url: https://github.com/electron/electron/releases/download/v{{{newValue}}}/electron-v{{{newValue}}}-linux-{{{arch}}}.zip"
+    },
+    {
+      "customType": "regex",
+      "description": "freedesktop-sdk runtime version (manifest and CI image)",
+      "managerFilePatterns": [
+        "/\\/ai\\.claude\\.Claude\\.yaml$/",
+        "/\\.github\\/workflows\\/flatpak-build\\.yaml$/"
+      ],
+      "matchStrings": [
+        "runtime-version: \"(?<currentValue>[\\d.]+)\"",
+        "base-version: \"(?<currentValue>[\\d.]+)\"",
+        "image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-(?<currentValue>[\\d.]+)"
+      ],
+      "depNameTemplate": "org.freedesktop.Sdk",
+      "datasourceTemplate": "custom.flathub-runtime",
+      "versioningTemplate": "loose"
+    }
+  ],
+  "customDatasources": {
+    "flathub-runtime": {
+      "defaultRegistryUrlTemplate": "https://flathub.org/api/v2/runtimes",
+      "format": "json",
+      "transformTemplates": [
+        "{ \"releases\": $each($$, function($v, $k) { $k })[$contains(\"org.freedesktop.Sdk/x86_64/\")] ~> $map(function($k) { { \"version\": $split($k, \"/\")[2] } }) }"
+      ]
+    },
+    "claude-desktop": {
+      "defaultRegistryUrlTemplate": "https://claude.ai/redirect/claudedotcom.v1.290130bf-1c36-4eb0-9a93-2410ca43ae53/api/desktop/win32/x64/exe/latest/redirect",
+      "format": "plain",
+      "transformTemplates": [
+        "{ \"releases\": [{ \"version\": $match($, /\\/([0-9]+\\.[0-9]+\\.[0-9]+)\\//).groups[0] }] }"
+      ]
+    }
+  }
+}

@@ -1,0 +1,162 @@
+app-id: ai.claude.Claude
+runtime: org.freedesktop.Sdk
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: "25.08"
+command: claude
+tags: [proprietary]
+separate-locales: false
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.node24
+add-extensions:
+  org.freedesktop.Sdk.Extension.node24:
+    directory: lib/sdk/node24
+    version: '25.08'
+    add-ld-path: lib
+    no-autodownload: false
+    autodelete: false
+build-options:
+  append-path: /usr/lib/sdk/node24/bin
+  env:
+    NPM_CONFIG_CACHE: /run/build/claude/npm-cache
+finish-args:
+  - --require-version=0.10.3
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --env=LD_LIBRARY_PATH=/app/lib
+  - --env=XCURSOR_PATH=/run/host/user-share/icons:/run/host/share/icons
+  - --env=ELECTRON_OZONE_PLATFORM_HINT=wayland
+  - --talk-name=org.freedesktop.Notifications
+  # Notification-area / tray (StatusNotifierItem on KDE & GNOME-via-extension,
+  # AppIndicator on Ubuntu/Cinnamon). Without these the SNI registration
+  # silently fails under Flatpak and no icon appears. Modern Electron
+  # registers the item by object path on its existing bus connection, so
+  # we don't need to --own-name the per-PID SNI bus name.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=com.canonical.AppMenu.Registrar
+  - --talk-name=com.canonical.AppMenu.Registrar.*
+  - --talk-name=com.canonical.indicator.application
+  # libappindicator claims a per-PID bus name under
+  # com.canonical.indicator.application; without ownership, the
+  # registration call to the watcher silently no-ops.
+  - --own-name=com.canonical.indicator.application.*
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/gtk-doc
+  - '*.la'
+modules:
+  - name: 7zip
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 7zz /app/bin/7zz
+      - ln -s 7zz /app/bin/7z
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/ip7z/7zip/releases/download/26.01/7z2601-linux-x64.tar.xz
+        sha256: 8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+        strip-components: 0
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/ip7z/7zip/releases/download/26.01/7z2601-linux-arm64.tar.xz
+        sha256: 39f8c9070c300a63c7484d9a983119ef3edf841e1ddf69f1affae29fdec5f612
+        strip-components: 0
+
+  - name: electron
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/electron
+      - cp -a . /app/electron/
+      - chmod +x /app/electron/electron /app/electron/chrome_crashpad_handler
+      # Drop the suid sandbox helper: zypak provides namespace sandboxing
+      # via CHROME_DEVEL_SANDBOX, and Chromium aborts if it sees a
+      # non-setuid chrome-sandbox sitting next to the binary.
+      - rm -f /app/electron/chrome-sandbox
+      # Electron resolves the app at <exe_dir>/resources/app.asar AND reads
+      # auxiliary files (tray icons, ion-dist, etc.) from process.resourcesPath
+      # i.e. <exe_dir>/resources. Point the whole resources dir at our
+      # extra-data tree so both the asar and the loose resource files are
+      # visible without per-file symlinks.
+      - ln -s /app/extra/claude/resources /app/electron/resources
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/electron/electron/releases/download/v41.5.0/electron-v41.5.0-linux-x64.zip
+        sha256: 1d5364794dffe2493d74a9755d49ba37ecdfd3d19a8e2a38349cd9374adb19d4
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/electron/electron/releases/download/v41.5.0/electron-v41.5.0-linux-arm64.zip
+        sha256: 1d0c89698bcc3029d0c197a215679c14c65ab67086c4529d5ea90280f3d5bcc2
+
+  - name: asar-tools-generated
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/share/node
+      - cp -a /usr/lib/sdk/node24/* /app/share/node/
+      - mkdir -p /app/share/claude/asar-tools
+      - cp -a node_modules /app/share/claude/asar-tools/
+      - install -Dm755 asar /app/bin/asar
+    sources:
+      - type: script
+        dest-filename: asar
+        commands:
+          - exec /app/share/node/bin/node /app/share/claude/asar-tools/node_modules/@electron/asar/bin/asar.mjs "$@"
+      - generated-sources.json
+
+  - name: claude
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 claude.sh /app/bin/claude
+      - install -Dm755 apply_extra /app/bin/apply_extra
+      - install -Dm755 claude-native-stub.js /app/share/claude/claude-native-stub.js
+      - install -Dm755 cowork-vm-service.js /app/share/claude/cowork-vm-service.js
+      - install -Dm755 frame-fix-wrapper.js /app/share/claude/frame-fix-wrapper.js
+      - install -Dm755 wco-shim.js /app/share/claude/wco-shim.js
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 ${FLATPAK_ID}.desktop -t /app/share/applications
+      - install -Dm644 ${FLATPAK_ID}-url-handler.desktop -t /app/share/applications
+      - install -Dm644 ${FLATPAK_ID}.svg /app/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - mkdir -p /app/extra/claude
+      - mkdir -p /app/lib/sdk/node24
+      - ln -s /app/lib/sdk/node24/bin/node /app/bin/node
+      - ln -s /app/lib/sdk/node24/bin/npm /app/bin/npm
+      - ln -s /app/lib/sdk/node24/bin/npx /app/bin/npx
+      - ln -s /app/lib/sdk/node24/bin/corepack /app/bin/corepack
+    sources:
+      - type: extra-data
+        filename: Claude-Setup-x64.exe
+        only-arches: [x86_64]
+        url: https://downloads.claude.ai/releases/win32/x64/1.6608.0/Claude-f65729daa9bbf1994963463204a556d0431e6054.exe
+        sha256: f1de35b7d5f23b3125090ea5ef2f7a7d3770ba12b075c269ee072f3e8b4cb7a9
+        size: 206315680
+      - type: extra-data
+        filename: Claude-Setup-arm64.exe
+        only-arches: [aarch64]
+        url: https://downloads.claude.ai/releases/win32/arm64/1.6608.0/Claude-f65729daa9bbf1994963463204a556d0431e6054.exe
+        sha256: d2bfc4254930dc5f51d92dcce92ff82b29338fd5d9bbcb32ea19640cb9710742
+        size: 204179616
+      - type: file
+        path: apply_extra
+      - type: file
+        path: claude.sh
+      - type: file
+        path: claude-native-stub.js
+      - type: file
+        path: cowork-vm-service.js
+      - type: file
+        path: frame-fix-wrapper.js
+      - type: file
+        path: wco-shim.js
+      - type: file
+        path: ai.claude.Claude.metainfo.xml
+      - type: file
+        path: ai.claude.Claude.desktop
+      - type: file
+        path: ai.claude.Claude-url-handler.desktop
+      - type: file
+        path: ai.claude.Claude.svg
