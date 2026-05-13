@@ -1,0 +1,142 @@
+[
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/@electron/asar/-/asar-4.0.0.tgz",
+    "sha256": "646c1ac65e0e43589749e336486606c1270d12879b22034f9078d370fd104ec3",
+    "dest": "node_modules/@electron/asar",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/@isaacs/cliui/-/cliui-9.0.0.tgz",
+    "sha256": "5b73422eadcd1784bad03303830ee818c22deb64d21b925f767b5161e514ed77",
+    "dest": "node_modules/@isaacs/cliui",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz",
+    "sha256": "9025508d9125eee531bbc49ce3ae560183975ad595f058c378bd56af4152fb16",
+    "dest": "node_modules/balanced-match",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.5.tgz",
+    "sha256": "e919c0ac902f05c2b3bbd31fd71af6c8ddfd74fadc85321231184d39ca990f31",
+    "dest": "node_modules/brace-expansion",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/commander/-/commander-13.1.0.tgz",
+    "sha256": "d5703ba285336d6d6d86fecf7a9f064e248879497d98ccc98ca849a62e34822a",
+    "dest": "node_modules/commander",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz",
+    "sha256": "188c320cdc413adfec03098fda72af7a9b02152ba13d3a8f87f172d93ced38ea",
+    "dest": "node_modules/cross-spawn",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/foreground-child/-/foreground-child-3.3.1.tgz",
+    "sha256": "af9cca5bb050049cadc01bf4a01af51bf0bc09aa209aa6c4458b45cb55c1673e",
+    "dest": "node_modules/foreground-child",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/glob/-/glob-11.1.0.tgz",
+    "sha256": "8816e244d245d86a1b8adf9ed0bf61c9665dbb1ee7b00dd6b3283f3ac0393bfb",
+    "dest": "node_modules/glob",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
+    "sha256": "47cfe872e088e28c53b736fef305324b57cc1cfc9f72a9b0f769f92731cb8359",
+    "dest": "node_modules/isexe",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/jackspeak/-/jackspeak-4.2.3.tgz",
+    "sha256": "f4154fec0865809b835720573c90bf4f5bdb37e974457eac89acb0f978068c6f",
+    "dest": "node_modules/jackspeak",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.3.6.tgz",
+    "sha256": "ac25c9ea2f0c3df12ee81dea7f58e0e463cc09af5a338c221fc94ffbccba248d",
+    "dest": "node_modules/lru-cache",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/minimatch/-/minimatch-10.2.5.tgz",
+    "sha256": "a6cea46915bfc6c3fae60f9bd003ea4f9d6a4233aa59a9ca729474d3824ca9e5",
+    "dest": "node_modules/minimatch",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/minipass/-/minipass-7.1.3.tgz",
+    "sha256": "52ac61be743755e3fdc98e560086d0d4a1e2c7fd3643387792db38e322d27d12",
+    "dest": "node_modules/minipass",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/package-json-from-dist/-/package-json-from-dist-1.0.1.tgz",
+    "sha256": "135c483e43689d0e17b1c56dd5e2dfea63a4d4afc749dc7ed6b66b97f7bc4e20",
+    "dest": "node_modules/package-json-from-dist",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz",
+    "sha256": "4b8999acb914830edcd3c5b8fec632b32c6bc759ac3edc86336f5a9e08ba7b92",
+    "dest": "node_modules/path-key",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/path-scurry/-/path-scurry-2.0.2.tgz",
+    "sha256": "dea3e3dab1c00c28fcb5871b1133b02050c7e110dde2dbe31e14067922c23ec1",
+    "dest": "node_modules/path-scurry",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz",
+    "sha256": "9acba5bd18a51e9cdf5898380e4df63f803e1844def64ae1a46f88cff86d556e",
+    "dest": "node_modules/shebang-command",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz",
+    "sha256": "fedbabaa6db26c6be0183f82777dfa852d59a62f8885de93bd32ebc28758958f",
+    "dest": "node_modules/shebang-regex",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/signal-exit/-/signal-exit-4.1.0.tgz",
+    "sha256": "9d3b58a811ecf6a641537387289274cd14f5bb912a27e4f1f2a74182bca8b795",
+    "dest": "node_modules/signal-exit",
+    "strip-components": 1
+  },
+  {
+    "type": "archive",
+    "url": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
+    "sha256": "a13adf5fddeb769655edce551e81fbb11904b9c9be76d95e41da8c4c499d4edc",
+    "dest": "node_modules/which",
+    "strip-components": 1
+  }
+]
