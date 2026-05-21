@@ -10,6 +10,13 @@ separate-locales: false
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.node24
 add-extensions:
+  com.visualstudio.code.tool:
+    directory: tools
+    subdirectories: true
+    version: '25.08'
+    add-ld-path: lib
+    no-autodownload: true
+    autodelete: false
   org.freedesktop.Sdk.Extension.node24:
     directory: lib/sdk/node24
     version: '25.08'
@@ -128,6 +135,7 @@ modules:
       - install -Dm644 ${FLATPAK_ID}.svg /app/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
       - mkdir -p /app/extra/claude
       - mkdir -p /app/lib/sdk/node24
+      - mkdir -p /app/tools
       - ln -s /app/lib/sdk/node24/bin/node /app/bin/node
       - ln -s /app/lib/sdk/node24/bin/npm /app/bin/npm
       - ln -s /app/lib/sdk/node24/bin/npx /app/bin/npx

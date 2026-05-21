@@ -86,5 +86,6 @@ ensure_claude_json_link
 export ELECTRON_FORCE_IS_PACKAGED=true
 export CHROME_DESKTOP=ai.claude.Claude.desktop
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
+export PATH="/app/tools/podman/bin:$PATH"
 
 exec /app/bin/zypak-wrapper.sh /app/electron/electron "${electron_args[@]}" "$@"
