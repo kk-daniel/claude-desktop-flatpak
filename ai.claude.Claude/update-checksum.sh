@@ -3,15 +3,16 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-redirect_x64="https://claude.ai/redirect/claudedotcom.v1.290130bf-1c36-4eb0-9a93-2410ca43ae53/api/desktop/win32/x64/exe/latest/redirect"
-redirect_arm64="https://claude.ai/redirect/claudedotcom.v1.290130bf-1c36-4eb0-9a93-2410ca43ae53/api/desktop/win32/arm64/exe/latest/redirect"
+api_x64="https://api.anthropic.com/api/desktop/win32/x64/exe/latest"
+api_arm64="https://api.anthropic.com/api/desktop/win32/arm64/exe/latest"
 
-resolve_url() {
-  local redirect="$1"
-  local url
-  url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$redirect" 2>/dev/null || true)"
-  if [ -z "$url" ] || [ "$url" = "$redirect" ]; then
-    echo "Warning: could not resolve Claude installer redirect: $redirect" >&2
+resolve_api_url() {
+  local api="$1"
+  local json url
+  json="$(curl -fsSL "$api" 2>/dev/null || true)"
+  url="$(printf '%s\n' "$json" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+  if [ -z "$url" ]; then
+    echo "Warning: could not resolve Claude installer metadata: $api" >&2
     return 1
   fi
   printf '%s\n' "$url"
@@ -56,13 +57,13 @@ update_arch() {
   echo "Updated $flatpak_arch: sha256=$sha size=$size"
 }
 
-x64_url="$(resolve_url "$redirect_x64" || true)"
+x64_url="$(resolve_api_url "$api_x64" || true)"
 if [ -z "$x64_url" ]; then
   x64_url="$(manifest_url Claude-Setup-x64.exe)"
   echo "Using manifest x64 URL: $x64_url"
 fi
 
-arm64_url="$(resolve_url "$redirect_arm64" || true)"
+arm64_url="$(resolve_api_url "$api_arm64" || true)"
 if [ -z "$arm64_url" ]; then
   arm64_url="$(derive_arm64_url "$x64_url")"
   if ! curl -fsIL "$arm64_url" >/dev/null 2>&1; then
