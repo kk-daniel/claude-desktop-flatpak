@@ -35,6 +35,23 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ github.head_ref }}
           fetch-depth: 2
+      - name: Capture dependency versions
+        id: dependency-versions-before
+        run: |
+          set -eo pipefail
+          versions="$(
+            {
+              grep -m 1 "url: https://downloads\.claude\.ai/releases/win32/x64/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "claude=" $7}'
+              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
+              grep -m 1 "url: https://github\.com/electron/electron/releases/download/v" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{sub(/^v/, "", $8); print "electron=" $8}'
+            } | sort
+          )"
+          {
+            echo "versions<<EOF"
+            printf "%s\n" "$versions"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Update checksums
         if: github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude'
         run: ./${APP_ID}/update-checksum.sh
@@ -47,6 +64,24 @@ jobs:
       - name: Update Electron checksums
         if: github.head_ref == 'renovate/electron' || github.head_ref == 'renovate/major-electron'
         run: ./${APP_ID}/update-electron-checksum.sh
+      - name: Verify dependency versions unchanged
+        env:
+          BEFORE: ${{ steps.dependency-versions-before.outputs.versions }}
+        run: |
+          set -eo pipefail
+          after="$(
+            {
+              grep -m 1 "url: https://downloads\.claude\.ai/releases/win32/x64/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "claude=" $7}'
+              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
+              grep -m 1 "url: https://github\.com/electron/electron/releases/download/v" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{sub(/^v/, "", $8); print "electron=" $8}'
+            } | sort
+          )"
+          if [ "$after" != "$BEFORE" ]; then
+            echo "Dependency versions changed while refreshing checksums." >&2
+            diff -u <(printf "%s\n" "$BEFORE") <(printf "%s\n" "$after") || true
+            exit 1
+          fi
+
       - name: Get last commit message
         id: last-commit
         run: |
