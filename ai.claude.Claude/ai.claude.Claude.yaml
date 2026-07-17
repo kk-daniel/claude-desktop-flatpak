@@ -144,15 +144,15 @@ modules:
       - type: extra-data
         filename: Claude-Setup-x64.exe
         only-arches: [x86_64]
-        url: https://downloads.claude.ai/releases/win32/x64/1.21459.3/Claude-e0f338aea51a130071b62788fee794575c1b9d0e.exe
-        sha256: 29f2c1473ba9b935782e9e535effe5311a3c2699c5bae929966e3a02ba33aa48
-        size: 227851936
+        url: https://downloads.claude.ai/releases/win32/x64/1.22209.0/Claude-77c938bac27689d6df971289c10759e512785c73.exe
+        sha256: f53e817530812fe86fc953c3bb20147f129a2e36592ec69bb90c49a9b3a6c80e
+        size: 228758176
       - type: extra-data
         filename: Claude-Setup-arm64.exe
         only-arches: [aarch64]
-        url: https://downloads.claude.ai/releases/win32/arm64/1.21459.3/Claude-e0f338aea51a130071b62788fee794575c1b9d0e.exe
-        sha256: e33f3faf7c7d67dfe5615ea23fc0e0f80ff33dd9971fc7032cc581ecaab3ab92
-        size: 224422560
+        url: https://downloads.claude.ai/releases/win32/arm64/1.22209.0/Claude-77c938bac27689d6df971289c10759e512785c73.exe
+        sha256: 24fa20bd6e62dd22263fa6ec1db5a39e7ad3a9e2e04082204bee77264268c07d
+        size: 225327264
       - type: file
         path: apply_extra
       - type: file
