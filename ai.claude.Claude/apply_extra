@@ -125,7 +125,7 @@ function mustReplace(name, re, fn) {
 // apply_extra installs them next to app.asar.
 mustReplace(
   'tray-icon-format',
-  /switch\((["'`])ico\1\)\{/,
+  /switch\((["'`])icoBROKEN\1\)\{/,
   () => 'switch(process.platform==="linux"?"png":"ico"){'
 );
 
