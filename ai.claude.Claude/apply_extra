@@ -98,16 +98,20 @@ const fs = require('fs');
 const path = process.argv[2];
 let s = fs.readFileSync(path, 'utf8');
 
-// Anchor-miss warnings: patches against re-minified upstream break
-// silently, so log loudly into the flatpak install log when a pattern
-// stops matching (upstream 1.25927.0 switched string literals from
+// Anchor misses are fatal: patches against re-minified upstream break
+// silently otherwise (upstream 1.25927.0 switched string literals from
 // "..." to `...`, which no-opped every patch in this file at once).
-function replaceOrWarn(name, re, fn) {
+// CI installs the built bundle in the "Create bundle" step, so a miss
+// fails the build there — before a release can ship with dead patches.
+// All misses are reported before exiting so one CI run shows them all.
+const misses = [];
+function mustReplace(name, re, fn) {
   let hit = false;
   s = s.replace(re, (...args) => { hit = true; return fn(...args); });
   if (!hit) {
-    console.warn(
-      '[apply_extra] WARNING: patch \'' + name + '\' matched nothing; '
+    misses.push(name);
+    console.error(
+      '[apply_extra] ERROR: patch \'' + name + '\' matched nothing; '
       + 'upstream bundle layout changed'
     );
   }
@@ -119,7 +123,7 @@ function replaceOrWarn(name, re, fn) {
 // decode (PNG/JPEG only) — and the tray comes up blank. Route Linux
 // through the `png` case; upstream ships TrayIconLinux(-Dark).png and
 // apply_extra installs them next to app.asar.
-replaceOrWarn(
+mustReplace(
   'tray-icon-format',
   /switch\((["'`])ico\1\)\{/,
   () => 'switch(process.platform==="linux"?"png":"ico"){'
@@ -132,7 +136,7 @@ replaceOrWarn(
 // override with CLAUDE_TRAY_ICON=dark|light|auto; 'auto' keeps the
 // upstream heuristic. Same policy as the pre-1.25927 patch, ported
 // from aaddrick/claude-desktop-debian scripts/patches/tray.sh.
-replaceOrWarn(
+mustReplace(
   'tray-icon-variant',
   /([\w$]+(?:\.[\w$]+)*\(\)===(["'`])gnome\2\|\|[\w$]+(?:\.[\w$]+)*\.shouldUseDarkColors)\?(["'`])TrayIconLinux-Dark\.png\3:(["'`])TrayIconLinux\.png\4/,
   (m, upstreamExpr) =>
@@ -151,15 +155,26 @@ replaceOrWarn(
 // change-event subscription are left alone. Port of
 // claude-desktop-debian scripts/patches/tray.sh::patch_menu_bar_default
 // for the backtick-literal bundles.
-replaceOrWarn(
+mustReplace(
   'menu-bar-default',
   /([\w$]+(?:\.[\w$]+)+)\((["'`])menuBarEnabled\2\)/g,
   (m, getter, q) =>
     '(' + getter + '(' + q + 'menuBarEnabled' + q + ')!==false)'
 );
 
+if (misses.length) {
+  console.error(
+    '[apply_extra] failing install: ' + misses.length
+    + ' patch(es) missed their anchor'
+  );
+  process.exit(1);
+}
+
 fs.writeFileSync(path, s);
 EOF
+else
+  echo "ERROR: $index_js not found; patches did not run" >&2
+  exit 1
 fi
 
 asar pack app.asar.contents app.asar --unpack '**/*.node'

@@ -208,6 +208,38 @@ jobs:
           flatpak --user remote-add --no-gpg-verify build-repo repo
           flatpak --user install --noninteractive build-repo ${{ env.APP_ID }}//$BRANCH
           flatpak build-bundle ~/.local/share/flatpak/repo ${{ env.APP_ID }}.flatpak --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo ${{ env.APP_ID }} $BRANCH
+      - name: Smoke test patches
+        env:
+          BRANCH: ${{ steps.clean-branch-name.outputs.branch }}
+        run: |
+          # apply_extra already ran during the install above and fails
+          # hard on a patch anchor miss. This step additionally catches
+          # the case where the patches never ran at all (e.g. upstream
+          # renames .vite/build/index.js) by asserting the patch markers
+          # exist in the deployed files. Asar stores file contents raw,
+          # so grep -a on the archive finds the markers without
+          # extraction.
+          set -eo pipefail
+          loc="$(flatpak --user info --show-location ${APP_ID}//${BRANCH})"
+          asar="$loc/files/extra/claude/resources/app.asar"
+          stub="$loc/files/extra/claude/resources/app.asar.unpacked/node_modules/@ant/claude-native/index.js"
+          fail=0
+          for marker in \
+            'switch(process.platform==="linux"?"png":"ico")' \
+            'CLAUDE_TRAY_ICON' \
+            'menuBarEnabled`)!==false'
+          do
+            if ! grep -aqF "$marker" "$asar"; then
+              echo "ERROR: patch marker missing from app.asar: $marker" >&2
+              fail=1
+            fi
+          done
+          if ! grep -qF 'class AuthRequest' "$stub"; then
+            echo "ERROR: AuthRequest missing from claude-native stub" >&2
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] && echo "All patch markers present"
+          exit "$fail"
       - name: Upload bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
