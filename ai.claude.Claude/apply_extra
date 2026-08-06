@@ -97,102 +97,67 @@ if [ -f "$index_js" ]; then
 const fs = require('fs');
 const path = process.argv[2];
 let s = fs.readFileSync(path, 'utf8');
-// Linux platform regex patches (both formats) from claude-desktop-debian
-// scripts/patches/claude-code.sh (jacobfrantz1 5c5eb39 legacy form, IliyaBrook
-// db11bd0 arch-aware form).
-s = s.replace(
-  /if\(process\.platform==="win32"\)return (\w+)==="arm64"\?"win32-arm64":"win32-x64";throw/,
-  'if(process.platform==="win32")return $1==="arm64"?"win32-arm64":"win32-x64";if(process.platform==="linux")return $1==="arm64"?"linux-arm64":"linux-x64";throw'
-);
-s = s.replace(
-  /if\(process\.platform==="win32"\)return"win32-x64";/,
-  'if(process.platform==="win32")return"win32-x64";if(process.platform==="linux")return process.arch==="arm64"?"linux-arm64":"linux-x64";'
-);
-// Tray icon variant on Linux. Names are misleading:
-//   TrayIconTemplate.png      = black glyph (visible on LIGHT panels)
-//   TrayIconTemplate-Dark.png = white glyph (visible on DARK panels)
-// Most modern Linux panels are dark, and nativeTheme.shouldUseDarkColors
-// is unreliable on KDE Plasma (the GTK color-scheme signal doesn't
-// always match the panel theme). Default to the white glyph and let
-// users override with CLAUDE_TRAY_ICON=dark|light|auto. 'auto' falls
-// back to the upstream nativeTheme check.
-s = s.replace(
-  /(:\$?\w+=)"TrayIconTemplate\.png"/g,
-  '$1(()=>{if(process.platform!=="linux")return"TrayIconTemplate.png";'
-  + 'const v=(process.env.CLAUDE_TRAY_ICON||"dark").toLowerCase();'
-  + 'if(v==="light")return"TrayIconTemplate.png";'
-  + 'if(v==="auto")return require("electron").nativeTheme.shouldUseDarkColors'
-  + '?"TrayIconTemplate-Dark.png":"TrayIconTemplate.png";'
-  + 'return"TrayIconTemplate-Dark.png"})()'
-);
 
-// Tray destroy/rebuild race fix. Mutex + 250ms cleanup delay are from
-// aaddrick/claude-desktop-debian@1bb05df (Wayland tray-menu fix, #135);
-// the 3-second startup-burst skip is from @bbf3b99 (#163). MIT licensed
-// — see LICENSE for attribution.
-//   1. Mutex guard so nativeTheme bursts don't queue concurrent rebuilds.
-//   2. 250ms delay after Tray.destroy() so DBus has time to drop the old
-//      org.kde.StatusNotifierItem object paths before the next Tray()
-//      tries to export them — without this, KDE/Plasma rejects the
-//      registration with "Activate is already exported" and no icon
-//      appears.
-//   3. Skip the first 3s of nativeTheme events (startup burst).
-const trayFunc = (s.match(/on\("menuBarEnabled",\(\)=>\{(\w+)\(\)\}/) || [])[1];
-if (trayFunc) {
-  const trayVarMatch = new RegExp(
-    '\\}\\);let (\\w+)=null;(?:async )?function ' + trayFunc
-  );
-  const trayVar = (s.match(trayVarMatch) || [])[1];
-  if (trayVar) {
-    // Make the function async so we can await a delay after destroy().
-    s = s.replace(
-      new RegExp('function ' + trayFunc + '\\(\\)\\{', 'g'),
-      'async function ' + trayFunc + '(){'
+// Anchor-miss warnings: patches against re-minified upstream break
+// silently, so log loudly into the flatpak install log when a pattern
+// stops matching (upstream 1.25927.0 switched string literals from
+// "..." to `...`, which no-opped every patch in this file at once).
+function replaceOrWarn(name, re, fn) {
+  let hit = false;
+  s = s.replace(re, (...args) => { hit = true; return fn(...args); });
+  if (!hit) {
+    console.warn(
+      '[apply_extra] WARNING: patch \'' + name + '\' matched nothing; '
+      + 'upstream bundle layout changed'
     );
-    // Mutex guard: drop reentrant calls within a 1.5s window.
-    if (!s.includes(trayFunc + '._running')) {
-      s = s.replace(
-        new RegExp('async function ' + trayFunc + '\\(\\)\\{', 'g'),
-        'async function ' + trayFunc + '(){if(' + trayFunc + '._running)return;' + trayFunc + '._running=true;setTimeout(()=>' + trayFunc + '._running=false,1500);'
-      );
-    }
-    // 250ms cleanup delay after destroy.
-    const destroyEsc = trayVar.replace(/\$/g, '\\$');
-    const destroyRe = new RegExp(
-      destroyEsc + '&&\\(' + destroyEsc + '\\.destroy\\(\\),' +
-      destroyEsc + '=null\\)'
-    );
-    s = s.replace(
-      destroyRe,
-      trayVar + '&&(' + trayVar + '.destroy(),' + trayVar + '=null,await new Promise(r=>setTimeout(r,250)))'
-    );
-    // Skip nativeTheme-triggered rebuilds for the first 3 seconds.
-    if (!s.includes('_trayStartTime')) {
-      s = s.replace(
-        /(\w+\.nativeTheme\.on\("updated",\(\)=>\{)/,
-        'let _trayStartTime=Date.now();$1'
-      );
-      s = s.replace(
-        new RegExp('\\((\\w+\\([^)]*\\)),' + trayFunc + '\\(\\),', 'g'),
-        '($1,Date.now()-_trayStartTime>3e3&&' + trayFunc + '(),'
-      );
-    }
   }
 }
 
-// menuBarEnabled default-to-true patch from claude-desktop-debian
-// scripts/patches/tray.sh::patch_menu_bar_default (aaddrick). The stock
-// !!menuBarEnabled check fails when the pref is undefined, so the tray is
-// never created on a fresh install. Rewrite to `var !== false` so the
-// default behavior is tray-on.
-const menuBarVarMatch = s.match(/const (\w+)=\w+\("menuBarEnabled"\)/);
-if (menuBarVarMatch) {
-  const menuBarVar = menuBarVarMatch[1];
-  s = s.replace(
-    new RegExp(',\\s*!!' + menuBarVar + '\\s*\\)', 'g'),
-    ',' + menuBarVar + '!==false)'
-  );
-}
+// Tray icon format. The Windows-targeted bundle constant-folds the
+// tray icon-format selector to the `ico` case, so on Linux the tray
+// loads Tray-Win32.ico — which nativeImage.createFromPath cannot
+// decode (PNG/JPEG only) — and the tray comes up blank. Route Linux
+// through the `png` case; upstream ships TrayIconLinux(-Dark).png and
+// apply_extra installs them next to app.asar.
+replaceOrWarn(
+  'tray-icon-format',
+  /switch\((["'`])ico\1\)\{/,
+  () => 'switch(process.platform==="linux"?"png":"ico"){'
+);
+
+// Tray icon variant. Upstream's png case picks the white glyph only on
+// GNOME or when nativeTheme reports dark, but nativeTheme is unreliable
+// on KDE Plasma (the GTK color-scheme signal doesn't track the panel
+// theme). Default to the white glyph (dark panels) and let users
+// override with CLAUDE_TRAY_ICON=dark|light|auto; 'auto' keeps the
+// upstream heuristic. Same policy as the pre-1.25927 patch, ported
+// from aaddrick/claude-desktop-debian scripts/patches/tray.sh.
+replaceOrWarn(
+  'tray-icon-variant',
+  /([\w$]+(?:\.[\w$]+)*\(\)===(["'`])gnome\2\|\|[\w$]+(?:\.[\w$]+)*\.shouldUseDarkColors)\?(["'`])TrayIconLinux-Dark\.png\3:(["'`])TrayIconLinux\.png\4/,
+  (m, upstreamExpr) =>
+    '(()=>{const v=(process.env.CLAUDE_TRAY_ICON||"dark").toLowerCase();'
+    + 'if(v==="light")return"TrayIconLinux.png";'
+    + 'if(v==="auto")return(' + upstreamExpr + ')'
+    + '?"TrayIconLinux-Dark.png":"TrayIconLinux.png";'
+    + 'return"TrayIconLinux-Dark.png"})()'
+);
+
+// menuBarEnabled default-to-on. The tray is created only when the
+// menuBarEnabled pref reads truthy, and the pref is unset on fresh
+// installs, so the tray never appears (and closing the main window
+// quits the app). Rewrite every single-argument read to `!== false`
+// so the default is tray-on; the two-argument setter call and the
+// change-event subscription are left alone. Port of
+// claude-desktop-debian scripts/patches/tray.sh::patch_menu_bar_default
+// for the backtick-literal bundles.
+replaceOrWarn(
+  'menu-bar-default',
+  /([\w$]+(?:\.[\w$]+)+)\((["'`])menuBarEnabled\2\)/g,
+  (m, getter, q) =>
+    '(' + getter + '(' + q + 'menuBarEnabled' + q + ')!==false)'
+);
+
 fs.writeFileSync(path, s);
 EOF
 fi
