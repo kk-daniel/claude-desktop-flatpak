@@ -328,7 +328,8 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ steps.app-token.outputs.token }}
-          tag_name: claude-${{ needs.extract-version.outputs.version }}
+          tag_name: claude-linux-${{ needs.extract-version.outputs.version }}
+          name: Claude ${{ needs.extract-version.outputs.version }}
           files: "*.flatpak"
           overwrite_files: true
           body: "Claude ${{ needs.extract-version.outputs.version }}"
