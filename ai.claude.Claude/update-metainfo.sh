@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-url="$(grep -A 5 'filename: Claude-Setup-x64.exe' ai.claude.Claude.yaml | grep -o 'url: .*' | head -n 1 | cut -d' ' -f2)"
-version="$(printf '%s\n' "$url" | sed -n 's#.*/win32/x64/\([0-9][0-9.]*\)/.*#\1#p')"
+url="$(grep -A 5 'filename: claude-desktop-amd64.deb' ai.claude.Claude.yaml | grep -o 'url: .*' | head -n 1 | cut -d' ' -f2)"
+version="$(printf '%s\n' "$url" | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_amd64\.deb$#\1#p')"
 
 if [ -z "$version" ]; then
   echo "Error: could not extract Claude version from URL: $url" >&2

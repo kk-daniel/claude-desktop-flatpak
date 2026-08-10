@@ -17,27 +17,23 @@
       "groupName": "7zip",
       "matchPackageNames": ["7zip", "ip7z/7zip"],
       "automerge": true
-    },
-    {
-      "description": "Electron",
-      "groupName": "electron",
-      "matchPackageNames": ["electron"],
-      "automerge": false
     }
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Claude Desktop installer URLs",
+      "description": "Claude Desktop .deb URLs (Anthropic's APT repo)",
       "managerFilePatterns": [
         "/\\/ai\\.claude\\.Claude\\.yaml$/"
       ],
       "matchStrings": [
-        "url: https://downloads\\.claude\\.ai/releases/win32/(?:x64|arm64)/(?<currentValue>[\\d.]+)/Claude-[a-f0-9]+\\.exe"
+        "url: https://downloads\\.claude\\.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_(?<currentValue>[\\d.]+)_"
       ],
       "depNameTemplate": "claude-desktop",
-      "datasourceTemplate": "custom.claude-desktop",
-      "versioningTemplate": "loose"
+      "datasourceTemplate": "deb",
+      "registryUrlTemplate": "https://downloads.claude.ai/claude-desktop/apt/stable?suite=stable&components=main&binaryArch=amd64",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "url: https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_{{{newValue}}}_"
     },
     {
       "customType": "regex",
@@ -53,20 +49,6 @@
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "loose",
       "autoReplaceStringTemplate": "url: https://github.com/ip7z/7zip/releases/download/{{{newValue}}}/7z{{{replace '\\.' '' newValue}}}-linux-{{{arch}}}.tar.xz"
-    },
-    {
-      "customType": "regex",
-      "description": "Electron release archive URLs",
-      "managerFilePatterns": [
-        "/\\/ai\\.claude\\.Claude\\.yaml$/"
-      ],
-      "matchStrings": [
-        "url: https://github\\.com/electron/electron/releases/download/v(?<currentValue>[\\d.]+)/electron-v[\\d.]+-linux-(?<arch>x64|arm64)\\.zip"
-      ],
-      "depNameTemplate": "electron",
-      "datasourceTemplate": "npm",
-      "versioningTemplate": "npm",
-      "autoReplaceStringTemplate": "url: https://github.com/electron/electron/releases/download/v{{{newValue}}}/electron-v{{{newValue}}}-linux-{{{arch}}}.zip"
     },
     {
       "customType": "regex",
@@ -91,13 +73,6 @@
       "format": "json",
       "transformTemplates": [
         "{ \"releases\": $each($$, function($v, $k) { $k })[$contains(\"org.freedesktop.Sdk/x86_64/\")] ~> $map(function($k) { { \"version\": $split($k, \"/\")[2] } }) }"
-      ]
-    },
-    "claude-desktop": {
-      "defaultRegistryUrlTemplate": "https://api.anthropic.com/api/desktop/win32/x64/exe/latest",
-      "format": "json",
-      "transformTemplates": [
-        "{ \"releases\": [{ \"version\": version }] }"
       ]
     }
   }
