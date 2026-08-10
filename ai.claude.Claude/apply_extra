@@ -1,221 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app_id="ai.claude.Claude"
-work_dir="$(mktemp -d)"
-trap 'rm -rf "$work_dir"' EXIT
-
 cd /app/extra
 
-installer=""
-for candidate in Claude-Setup-x64.exe Claude-Setup-arm64.exe; do
+# Unpack inside /app/extra rather than /tmp: the payload is ~520 MB, and
+# keeping the work dir on the destination filesystem makes the final step a
+# rename instead of a second full-size copy.
+work_dir="/app/extra/.unpack"
+trap 'rm -rf "$work_dir"' EXIT
+rm -rf "$work_dir"
+mkdir -p "$work_dir"
+
+deb=""
+for candidate in claude-desktop-amd64.deb claude-desktop-arm64.deb; do
   if [ -f "$candidate" ]; then
-    installer="$candidate"
+    deb="$candidate"
     break
   fi
 done
 
-if [ -z "$installer" ]; then
-  echo "Claude installer not found in /app/extra" >&2
+if [ -z "$deb" ]; then
+  echo "Claude Desktop .deb not found in /app/extra" >&2
   exit 1
 fi
 
-case "$(uname -m)" in
-  x86_64) claude_arch="amd64"; resource_arch="x64" ;;
-  aarch64) claude_arch="arm64"; resource_arch="arm64" ;;
-  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-esac
-
-rm -rf claude/resources
-mkdir -p claude/resources "$work_dir/exe" "$work_dir/app"
-
-7z x -y "$installer" -o"$work_dir/exe" >/dev/null
-nupkg="$(find "$work_dir/exe" -maxdepth 1 -name 'AnthropicClaude-*.nupkg' | head -n 1)"
-if [ -z "$nupkg" ]; then
-  echo "AnthropicClaude nupkg not found in installer" >&2
+# binutils' `ar` is SDK-only and apply_extra runs against the Platform runtime,
+# so 7z does the unwrapping: it walks the ar container and the xz stream in one
+# pass and writes data.tar. tar then restores the exec bits and the single
+# symlink the payload carries.
+7z x -y "$deb" -o"$work_dir" >/dev/null
+if [ ! -f "$work_dir/data.tar" ]; then
+  echo "data.tar not found in $deb" >&2
   exit 1
 fi
 
-7z x -y "$nupkg" -o"$work_dir/nupkg" >/dev/null
-resources="$work_dir/nupkg/lib/net45/resources"
-if [ ! -f "$resources/app.asar" ]; then
-  echo "Claude app.asar not found in nupkg" >&2
+tar xf "$work_dir/data.tar" -C "$work_dir" ./usr/lib/claude-desktop
+rm -f "$work_dir/data.tar"
+
+payload="$work_dir/usr/lib/claude-desktop"
+if [ ! -f "$payload/resources/app.asar" ]; then
+  echo "app.asar not found in $deb payload" >&2
   exit 1
 fi
 
-mkdir -p claude/resources
-cp "$resources/app.asar" "$work_dir/app/app.asar"
-cp -a "$resources/app.asar.unpacked" "$work_dir/app/app.asar.unpacked"
-cd "$work_dir/app"
+# The .deb ships the app and its Electron in one directory, laid out exactly
+# how Electron expects: the binary resolves app.asar and process.resourcesPath
+# from <exe_dir>/resources. Moving the tree wholesale keeps that intact.
+rm -rf claude
+mv "$payload" claude
 
-asar extract app.asar app.asar.contents
-node_bin="/app/share/node/bin/node"
+# Drop the suid sandbox helper: zypak provides namespace sandboxing via
+# CHROME_DEVEL_SANDBOX, and Chromium aborts if it sees a non-setuid
+# chrome-sandbox sitting next to the binary.
+rm -f claude/chrome-sandbox
 
-original_main="$("$node_bin" -e "const p=require('./app.asar.contents/package.json'); console.log(p.main || 'index.js')")"
-cp /app/share/claude/frame-fix-wrapper.js app.asar.contents/frame-fix-wrapper.js
-# frame-fix-entry.js + package.json transform (originalMain/main/desktopName/
-# optionalDependencies['node-pty']) below are from claude-desktop-debian
-# scripts/patches/app-asar.sh (speleoalex 7882635 + aaddrick 3591392 node-pty).
-cat > app.asar.contents/frame-fix-entry.js <<EOF
-process.on('uncaughtException', (error) => {
-  console.error('[claude-flatpak] uncaughtException:',
-    error && error.stack ? error.stack : error);
-});
-process.on('unhandledRejection', (error) => {
-  console.error('[claude-flatpak] unhandledRejection:',
-    error && error.stack ? error.stack : error);
-});
-require('./frame-fix-wrapper.js');
-require('./${original_main}');
-EOF
+chmod +x claude/claude-desktop claude/chrome_crashpad_handler
 
-"$node_bin" - "$app_id.desktop" <<'EOF'
-const fs = require('fs');
-const desktopName = process.argv[2];
-const path = './app.asar.contents/package.json';
-const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
-pkg.originalMain = pkg.main;
-pkg.main = 'frame-fix-entry.js';
-pkg.desktopName = desktopName;
-pkg.optionalDependencies = pkg.optionalDependencies || {};
-pkg.optionalDependencies['node-pty'] = '^1.0.0';
-fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
-EOF
-
-mkdir -p app.asar.contents/node_modules/@ant/claude-native
-cp /app/share/claude/claude-native-stub.js app.asar.contents/node_modules/@ant/claude-native/index.js
-
-mkdir -p app.asar.contents/resources/i18n
-cp "$resources"/*-*.json app.asar.contents/resources/i18n/ 2>/dev/null || true
-cp "$resources"/Tray* app.asar.contents/resources/ 2>/dev/null || true
-cp /app/share/claude/wco-shim.js app.asar.contents/wco-shim.js
-cp /app/share/claude/cowork-vm-service.js app.asar.contents/cowork-vm-service.js
-
-index_js="app.asar.contents/.vite/build/index.js"
-if [ -f "$index_js" ]; then
-  "$node_bin" - "$index_js" <<'EOF'
-const fs = require('fs');
-const path = process.argv[2];
-let s = fs.readFileSync(path, 'utf8');
-
-// Anchor misses are fatal: patches against re-minified upstream break
-// silently otherwise (upstream 1.25927.0 switched string literals from
-// "..." to `...`, which no-opped every patch in this file at once).
-// CI installs the built bundle in the "Create bundle" step, so a miss
-// fails the build there — before a release can ship with dead patches.
-// All misses are reported before exiting so one CI run shows them all.
-const misses = [];
-function mustReplace(name, re, fn) {
-  let hit = false;
-  s = s.replace(re, (...args) => { hit = true; return fn(...args); });
-  if (!hit) {
-    misses.push(name);
-    console.error(
-      '[apply_extra] ERROR: patch \'' + name + '\' matched nothing; '
-      + 'upstream bundle layout changed'
-    );
-  }
-}
-
-// Tray icon format. The Windows-targeted bundle constant-folds the
-// tray icon-format selector to the `ico` case, so on Linux the tray
-// loads Tray-Win32.ico — which nativeImage.createFromPath cannot
-// decode (PNG/JPEG only) — and the tray comes up blank. Route Linux
-// through the `png` case; upstream ships TrayIconLinux(-Dark).png and
-// apply_extra installs them next to app.asar.
-mustReplace(
-  'tray-icon-format',
-  /switch\((["'`])ico\1\)\{/,
-  () => 'switch(process.platform==="linux"?"png":"ico"){'
-);
-
-// Tray icon variant. Upstream's png case picks the white glyph only on
-// GNOME or when nativeTheme reports dark, but nativeTheme is unreliable
-// on KDE Plasma (the GTK color-scheme signal doesn't track the panel
-// theme). Default to the white glyph (dark panels) and let users
-// override with CLAUDE_TRAY_ICON=dark|light|auto; 'auto' keeps the
-// upstream heuristic. Same policy as the pre-1.25927 patch, ported
-// from aaddrick/claude-desktop-debian scripts/patches/tray.sh.
-mustReplace(
-  'tray-icon-variant',
-  /([\w$]+(?:\.[\w$]+)*\(\)===(["'`])gnome\2\|\|[\w$]+(?:\.[\w$]+)*\.shouldUseDarkColors)\?(["'`])TrayIconLinux-Dark\.png\3:(["'`])TrayIconLinux\.png\4/,
-  (m, upstreamExpr) =>
-    '(()=>{const v=(process.env.CLAUDE_TRAY_ICON||"dark").toLowerCase();'
-    + 'if(v==="light")return"TrayIconLinux.png";'
-    + 'if(v==="auto")return(' + upstreamExpr + ')'
-    + '?"TrayIconLinux-Dark.png":"TrayIconLinux.png";'
-    + 'return"TrayIconLinux-Dark.png"})()'
-);
-
-// menuBarEnabled default-to-on. The tray is created only when the
-// menuBarEnabled pref reads truthy, and the pref is unset on fresh
-// installs, so the tray never appears (and closing the main window
-// quits the app). Rewrite every single-argument read to `!== false`
-// so the default is tray-on; the two-argument setter call and the
-// change-event subscription are left alone. Port of
-// claude-desktop-debian scripts/patches/tray.sh::patch_menu_bar_default
-// for the backtick-literal bundles.
-mustReplace(
-  'menu-bar-default',
-  /([\w$]+(?:\.[\w$]+)+)\((["'`])menuBarEnabled\2\)/g,
-  (m, getter, q) =>
-    '(' + getter + '(' + q + 'menuBarEnabled' + q + ')!==false)'
-);
-
-if (misses.length) {
-  console.error(
-    '[apply_extra] failing install: ' + misses.length
-    + ' patch(es) missed their anchor'
-  );
-  process.exit(1);
-}
-
-fs.writeFileSync(path, s);
-EOF
-else
-  echo "ERROR: $index_js not found; patches did not run" >&2
-  exit 1
-fi
-
-asar pack app.asar.contents app.asar --unpack '**/*.node'
-mkdir -p app.asar.unpacked/node_modules/@ant/claude-native
-cp /app/share/claude/claude-native-stub.js app.asar.unpacked/node_modules/@ant/claude-native/index.js
-cp /app/share/claude/cowork-vm-service.js app.asar.unpacked/cowork-vm-service.js
-
-cp app.asar /app/extra/claude/resources/app.asar
-cp -a app.asar.unpacked /app/extra/claude/resources/app.asar.unpacked
-
-ssh_src="$resources/claude-ssh"
-if [ -d "$ssh_src" ]; then
-  mkdir -p /app/extra/claude/resources/claude-ssh
-  cp "$ssh_src/version.txt" /app/extra/claude/resources/claude-ssh/ 2>/dev/null || true
-  cp "$ssh_src/claude-ssh-linux-$claude_arch" /app/extra/claude/resources/claude-ssh/ 2>/dev/null || true
-  chmod +x /app/extra/claude/resources/claude-ssh/claude-ssh-linux-"$claude_arch" 2>/dev/null || true
-fi
-
-# Locale JSON files. The packaged-mode loader reads readdirSync(process.resourcesPath)
-# directly (filters on /[a-z]{2}-[A-Z]{2}/), so the *.json files must live next to
-# app.asar — not inside it. Without this copy, every menu item logs MISSING_TRANSLATION
-# and the UI falls back to defaultMessage.
-cp "$resources"/*-*.json /app/extra/claude/resources/ 2>/dev/null || true
-cp "$resources"/Tray* /app/extra/claude/resources/ 2>/dev/null || true
-cp "$resources"/smol-bin."$resource_arch".vhdx /app/extra/claude/resources/ 2>/dev/null || true
-cp "$resources"/cowork-plugin-shim.sh /app/extra/claude/resources/ 2>/dev/null || true
-if [ -f /app/extra/claude/resources/cowork-plugin-shim.sh ]; then
-  sed -i 's/\r$//' /app/extra/claude/resources/cowork-plugin-shim.sh
-  chmod +x /app/extra/claude/resources/cowork-plugin-shim.sh
-fi
-cp -a "$resources"/ion-dist /app/extra/claude/resources/ 2>/dev/null || true
-
-if command -v wrestool >/dev/null 2>&1 && command -v icotool >/dev/null 2>&1; then
-  cd "$work_dir/nupkg"
-  wrestool -x -t 14 lib/net45/claude.exe -o "$work_dir/claude.ico" 2>/dev/null || true
-  icotool -x "$work_dir/claude.ico" -o "$work_dir/icons" 2>/dev/null || true
-  best_icon="$(find "$work_dir/icons" -name '*.png' 2>/dev/null | sort -V | tail -n 1 || true)"
-  if [ -n "$best_icon" ]; then
-    install -Dm644 "$best_icon" "/app/extra/claude/resources/$app_id.png"
-  fi
-fi
-
-rm -f /app/extra/Claude-Setup-x64.exe /app/extra/Claude-Setup-arm64.exe
+rm -f /app/extra/claude-desktop-amd64.deb /app/extra/claude-desktop-arm64.deb
 echo "Claude Desktop extra data installed"

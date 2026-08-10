@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# resolve_titlebar_style, cleanup_stale_lock, cleanup_stale_cowork_socket,
-# and the Electron env/flag setup below are derived from
+# cleanup_stale_lock and the Electron env/flag setup below are derived from
 # aaddrick/claude-desktop-debian/scripts/launcher-common.sh. MIT licensed
 # — see LICENSE.
 set -euo pipefail
@@ -11,13 +10,6 @@ log_file="$log_dir/launcher.log"
 
 log() {
   printf '%s\n' "$*" >> "$log_file"
-}
-
-resolve_titlebar_style() {
-  case "${CLAUDE_TITLEBAR_STYLE:-hybrid}" in
-    hybrid|native|hidden) printf '%s\n' "${CLAUDE_TITLEBAR_STYLE:-hybrid}" ;;
-    *) printf '%s\n' "hybrid" ;;
-  esac
 }
 
 cleanup_stale_lock() {
@@ -32,15 +24,6 @@ cleanup_stale_lock() {
   if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$lock_file"
     log "Removed stale SingletonLock for PID $pid"
-  fi
-}
-
-cleanup_stale_cowork_socket() {
-  local sock="${XDG_RUNTIME_DIR:-/tmp}/cowork-vm-service.sock"
-  [ -S "$sock" ] || return 0
-  if ! pgrep -f 'cowork-vm-service\.js' >/dev/null 2>&1; then
-    rm -f "$sock"
-    log "Removed stale cowork-vm-service socket"
   fi
 }
 
@@ -62,14 +45,9 @@ ensure_claude_json_link() {
   fi
 }
 
+# No titlebar flags: the official Linux build gates titleBarOverlay itself, so
+# forcing CustomTitlebar/WindowControlsOverlay here would fight its own logic.
 electron_args=()
-style="$(resolve_titlebar_style)"
-if [ "$style" = "hidden" ]; then
-  electron_args+=(--enable-features=WindowControlsOverlay)
-else
-  export ELECTRON_USE_SYSTEM_TITLE_BAR=1
-  electron_args+=(--disable-features=CustomTitlebar)
-fi
 
 if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${ELECTRON_OZONE_PLATFORM_HINT:-wayland}" = "wayland" ]; then
   electron_args+=(--enable-features=UseOzonePlatform,WaylandWindowDecorations --enable-wayland-ime --wayland-text-input-version=3)
@@ -80,7 +58,6 @@ if [ -n "${XRDP_SESSION:-}" ]; then
 fi
 
 cleanup_stale_lock
-cleanup_stale_cowork_socket
 ensure_claude_json_link
 
 export ELECTRON_FORCE_IS_PACKAGED=true
@@ -88,4 +65,4 @@ export CHROME_DESKTOP=ai.claude.Claude.desktop
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
 export PATH="/app/tools/podman/bin:$PATH"
 
-exec /app/bin/zypak-wrapper.sh /app/electron/electron "${electron_args[@]}" "$@"
+exec /app/bin/zypak-wrapper.sh /app/extra/claude/claude-desktop "${electron_args[@]}" "$@"

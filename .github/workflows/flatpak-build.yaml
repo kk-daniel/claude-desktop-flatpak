@@ -20,7 +20,7 @@ env:
 jobs:
   post-renovate:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.actor == 'renovate[bot]' && (github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude' || github.head_ref == 'renovate/7zip' || github.head_ref == 'renovate/major-7zip' || github.head_ref == 'renovate/electron' || github.head_ref == 'renovate/major-electron')
+    if: github.event_name == 'pull_request' && github.actor == 'renovate[bot]' && (github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude' || github.head_ref == 'renovate/7zip' || github.head_ref == 'renovate/major-7zip')
     outputs:
       changes_detected: ${{ steps.commit.outputs.changes_detected }}
     steps:
@@ -41,9 +41,8 @@ jobs:
           set -eo pipefail
           versions="$(
             {
-              grep -m 1 "url: https://downloads\.claude\.ai/releases/win32/x64/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "claude=" $7}'
+              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
               grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
-              grep -m 1 "url: https://github\.com/electron/electron/releases/download/v" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{sub(/^v/, "", $8); print "electron=" $8}'
             } | sort
           )"
           {
@@ -61,9 +60,6 @@ jobs:
       - name: Update 7-Zip checksums
         if: github.head_ref == 'renovate/7zip' || github.head_ref == 'renovate/major-7zip'
         run: ./${APP_ID}/update-7zip-checksum.sh
-      - name: Update Electron checksums
-        if: github.head_ref == 'renovate/electron' || github.head_ref == 'renovate/major-electron'
-        run: ./${APP_ID}/update-electron-checksum.sh
       - name: Verify dependency versions unchanged
         env:
           BEFORE: ${{ steps.dependency-versions-before.outputs.versions }}
@@ -71,9 +67,8 @@ jobs:
           set -eo pipefail
           after="$(
             {
-              grep -m 1 "url: https://downloads\.claude\.ai/releases/win32/x64/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "claude=" $7}'
+              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
               grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
-              grep -m 1 "url: https://github\.com/electron/electron/releases/download/v" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{sub(/^v/, "", $8); print "electron=" $8}'
             } | sort
           )"
           if [ "$after" != "$BEFORE" ]; then
@@ -121,8 +116,8 @@ jobs:
         id: extract-version
         run: |
           set -eo pipefail
-          URL="$(grep -A 5 'filename: Claude-Setup-x64.exe' ${APP_ID}/${APP_ID}.yaml | grep -o 'url: .*' | head -1 | cut -d' ' -f2)"
-          VERSION="$(echo "$URL" | sed -n 's#.*/win32/x64/\([0-9][0-9.]*\)/.*#\1#p')"
+          URL="$(grep -A 5 'filename: claude-desktop-amd64.deb' ${APP_ID}/${APP_ID}.yaml | grep -o 'url: .*' | head -1 | cut -d' ' -f2)"
+          VERSION="$(echo "$URL" | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_amd64\.deb$#\1#p')"
           if [ -z "$VERSION" ]; then
             echo "Error: Could not extract version from URL: $URL" >&2
             exit 1
@@ -131,7 +126,7 @@ jobs:
           if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
             # Initial commit: no parent to diff against, treat as new version.
             echo "version-changed=true" >> "$GITHUB_OUTPUT"
-          elif git diff HEAD~1..HEAD ${APP_ID}/${APP_ID}.yaml | grep -A 5 'filename: Claude-Setup-x64.exe' | grep -q '^.\s*url: '; then
+          elif git diff HEAD~1..HEAD -- ${APP_ID}/${APP_ID}.yaml | grep -q '^+.*url: https://downloads\.claude\.ai/claude-desktop/'; then
             echo "version-changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "version-changed=false" >> "$GITHUB_OUTPUT"
@@ -208,37 +203,43 @@ jobs:
           flatpak --user remote-add --no-gpg-verify build-repo repo
           flatpak --user install --noninteractive build-repo ${{ env.APP_ID }}//$BRANCH
           flatpak build-bundle ~/.local/share/flatpak/repo ${{ env.APP_ID }}.flatpak --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo ${{ env.APP_ID }} $BRANCH
-      - name: Smoke test patches
+      - name: Smoke test payload
         env:
           BRANCH: ${{ steps.clean-branch-name.outputs.branch }}
         run: |
-          # apply_extra already ran during the install above and fails
-          # hard on a patch anchor miss. This step additionally catches
-          # the case where the patches never ran at all (e.g. upstream
-          # renames .vite/build/index.js) by asserting the patch markers
-          # exist in the deployed files. Asar stores file contents raw,
-          # so grep -a on the archive finds the markers without
-          # extraction.
+          # apply_extra already ran during the install above and fails hard
+          # if the .deb cannot be unwrapped. This step asserts the unpacked
+          # tree actually landed where claude.sh execs it, so an upstream
+          # layout change (payload no longer at usr/lib/claude-desktop, or
+          # the native bindings dropped from app.asar.unpacked) fails the
+          # build instead of shipping a launcher that dies at startup.
           set -eo pipefail
           loc="$(flatpak --user info --show-location ${APP_ID}//${BRANCH})"
-          asar="$loc/files/extra/claude/resources/app.asar"
-          stub="$loc/files/extra/claude/resources/app.asar.unpacked/node_modules/@ant/claude-native/index.js"
+          root="$loc/files/extra/claude"
           fail=0
-          for marker in \
-            'switch(process.platform==="linux"?"png":"ico")' \
-            'CLAUDE_TRAY_ICON' \
-            'menuBarEnabled`)!==false'
+          for path in \
+            claude-desktop \
+            chrome_crashpad_handler \
+            resources/app.asar \
+            resources/app.asar.unpacked/node_modules/@ant/claude-native/claude-native-binding.node \
+            resources/TrayIconTemplate.png
           do
-            if ! grep -aqF "$marker" "$asar"; then
-              echo "ERROR: patch marker missing from app.asar: $marker" >&2
+            if [ ! -f "$root/$path" ]; then
+              echo "ERROR: missing from payload: $path" >&2
               fail=1
             fi
           done
-          if ! grep -qF 'class AuthRequest' "$stub"; then
-            echo "ERROR: AuthRequest missing from claude-native stub" >&2
+          if [ ! -x "$root/claude-desktop" ]; then
+            echo "ERROR: claude-desktop is not executable" >&2
             fail=1
           fi
-          [ "$fail" -eq 0 ] && echo "All patch markers present"
+          # zypak supplies the sandbox; a leftover non-setuid chrome-sandbox
+          # next to the binary makes Chromium abort at startup.
+          if [ -e "$root/chrome-sandbox" ]; then
+            echo "ERROR: chrome-sandbox was not removed from the payload" >&2
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] && echo "Payload layout OK"
           exit "$fail"
       - name: Upload bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -327,7 +328,8 @@ jobs:
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           token: ${{ steps.app-token.outputs.token }}
-          tag_name: claude-${{ needs.extract-version.outputs.version }}
+          tag_name: claude-linux-${{ needs.extract-version.outputs.version }}
+          name: Claude ${{ needs.extract-version.outputs.version }}
           files: "*.flatpak"
           overwrite_files: true
           body: "Claude ${{ needs.extract-version.outputs.version }}"

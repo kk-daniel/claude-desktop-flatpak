@@ -1,15 +1,8 @@
 Copyright (c) 2026 Daniel Linjama
 Portions Copyright (c) 2024-2026 Claude Desktop Linux Maintainers
   (from aaddrick/claude-desktop-debian, used under the MIT License — in:
-   - ai.claude.Claude/apply_extra
-       package.json + frame-fix-entry patch, Linux platform regex
-       (both formats), tray destroy/rebuild race fix,
-       menuBarEnabled default-to-true patch
-   - ai.claude.Claude/frame-fix-wrapper.js
-       require('electron') interception + BrowserWindowWithFrame class
    - ai.claude.Claude/claude.sh
-       cleanup_stale_lock, cleanup_stale_cowork_socket,
-       resolve_titlebar_style, and Electron env/flag setup)
+       cleanup_stale_lock and the Electron env/flag setup)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
