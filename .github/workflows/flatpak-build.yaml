@@ -20,7 +20,9 @@ env:
 jobs:
   post-renovate:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.actor == 'renovate[bot]' && (github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude' || github.head_ref == 'renovate/7zip' || github.head_ref == 'renovate/major-7zip')
+    # Renovate branch names end with the group slug: renovate/<slug>, renovate/major-<slug>
+    # and, with separateMultipleMajor, renovate/major-<N>-<slug>.
+    if: github.event_name == 'pull_request' && github.actor == 'renovate[bot]' && startsWith(github.head_ref, 'renovate/') && (endsWith(github.head_ref, 'claude') || endsWith(github.head_ref, '7zip'))
     outputs:
       changes_detected: ${{ steps.commit.outputs.changes_detected }}
     steps:
@@ -52,13 +54,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Update checksums
-        if: github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude'
+        if: endsWith(github.head_ref, 'claude')
         run: ./${APP_ID}/update-checksum.sh
       - name: Update metainfo
-        if: github.head_ref == 'renovate/claude' || github.head_ref == 'renovate/major-claude'
+        if: endsWith(github.head_ref, 'claude')
         run: ./${APP_ID}/update-metainfo.sh
       - name: Update 7-Zip checksums
-        if: github.head_ref == 'renovate/7zip' || github.head_ref == 'renovate/major-7zip'
+        if: endsWith(github.head_ref, '7zip')
         run: ./${APP_ID}/update-7zip-checksum.sh
       - name: Verify dependency versions unchanged
         env:

@@ -42,13 +42,13 @@
         "/\\/ai\\.claude\\.Claude\\.yaml$/"
       ],
       "matchStrings": [
-        "url: https://github\\.com/ip7z/7zip/releases/download/(?<currentValue>[\\d.]+)/7z\\d+-linux-(?<arch>x64|arm64)\\.tar\\.xz"
+        "url: https://github\\.com/ip7z/7zip/releases/download/(?<currentValue>[\\d.]+)/7z\\d+-linux-"
       ],
       "depNameTemplate": "7zip",
       "packageNameTemplate": "ip7z/7zip",
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "loose",
-      "autoReplaceStringTemplate": "url: https://github.com/ip7z/7zip/releases/download/{{{newValue}}}/7z{{{replace '\\.' '' newValue}}}-linux-{{{arch}}}.tar.xz"
+      "autoReplaceStringTemplate": "url: https://github.com/ip7z/7zip/releases/download/{{{newValue}}}/7z{{{replace '\\.' '' newValue}}}-linux-"
     },
     {
       "customType": "regex",
