@@ -20,6 +20,9 @@ Run:
 ./ai.claude.Claude/update-metainfo.sh
 ```
 
-The checksum updater resolves the current official Claude Desktop Windows
-installer URLs, records their `sha256` and `size` values in the manifest, and
-keeps both `x86_64` and `aarch64` entries in sync.
+The checksum updater verifies Anthropic's APT release index against the signing
+key pinned in `ai.claude.Claude/anthropic-apt-key.asc`
+(`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`), then copies each .deb's
+`sha256` and `size` out of the signed `Packages` index into the manifest,
+keeping the `x86_64` and `aarch64` entries in sync. Anything it cannot trace
+back to that signature is a hard error.
