@@ -98,6 +98,45 @@ jobs:
           push_options: '--force'
           file_pattern: ${{ env.APP_ID }}/${{ env.APP_ID }}.yaml ${{ env.APP_ID }}/${{ env.APP_ID }}.metainfo.xml
 
+  # update-checksum.sh is otherwise only ever run by post-renovate, on a Renovate
+  # branch ending in `claude`. That left the signature verification it performs
+  # -- and the key it trusts -- shipping without CI ever executing them, with the
+  # first real run landing inside a PR that automerges itself. Gated like
+  # extract-version so it sees the commit after post-renovate has settled.
+  verify-pins:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: post-renovate
+    if: >-
+      always() && !cancelled() &&
+      needs.post-renovate.result == 'skipped'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Vendored signing key matches upstream
+        run: |
+          set -eo pipefail
+          curl -fsSL https://downloads.claude.ai/claude-desktop/key.asc -o upstream-key.asc
+          if ! diff -u ${APP_ID}/anthropic-apt-key.asc upstream-key.asc; then
+            echo "::error::Vendored signing key differs from downloads.claude.ai/claude-desktop/key.asc. If Anthropic rotated the key, re-vendor it and update the pinned fingerprint in update-checksum.sh together -- never one without the other."
+            exit 1
+          fi
+          rm -f upstream-key.asc
+      - name: Manifest pins match the signed index
+        env:
+          # On a tag we are about to publish, so pay the ~340 MB to hash both
+          # .debs: nothing else in CI ever verifies the aarch64 bytes, since the
+          # build job installs x86_64 only.
+          VERIFY_DEB_BYTES: ${{ github.ref_type == 'tag' && '1' || '0' }}
+        run: |
+          set -eo pipefail
+          ./${APP_ID}/update-checksum.sh
+          if ! git diff --exit-code -- ${APP_ID}/${APP_ID}.yaml; then
+            echo "::error::Manifest sha256/size do not match Anthropic's signed index. Run ./${APP_ID}/update-checksum.sh and commit the result."
+            exit 1
+          fi
+
   extract-version:
     runs-on: ubuntu-latest
     permissions:
