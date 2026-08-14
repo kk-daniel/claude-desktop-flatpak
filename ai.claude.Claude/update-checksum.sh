@@ -136,7 +136,7 @@ manifest_url() {
 # nothing, so that every way this can fail happens before anything is written.
 resolve_arch() {
   local arch="$1"
-  local url version show filename sha size
+  local url version resolved resolved_url sha size
   url="$(manifest_url "$arch")"
   [ -n "$url" ] || die "could not find a $arch .deb URL in $manifest"
 
@@ -153,22 +153,24 @@ resolve_arch() {
     *) die "could not parse a version out of $arch URL: $url" ;;
   esac
 
-  show="$(apt-cache show "${package}:${arch}=${version}" 2>"$work/show-err")" ||
-    die "apt-cache failed for ${package}:${arch}=${version}:
-$(cat "$work/show-err")"
+  # Resolve against the verified index. --print-uris emits one line,
+  # "'<url>' <filename> <size> SHA256:<hash>", and downloads nothing. It is
+  # preferred over `apt-cache show` because a version that is not in the index
+  # makes it exit non-zero, where apt-cache exits 0 with empty output -- a
+  # missing version cannot be mistaken here for a successful lookup.
+  resolved="$(apt-get download --print-uris "${package}:${arch}=${version}" 2>"$work/uris-err")" ||
+    die "APT could not resolve ${package}:${arch}=${version} in the signed $arch index:
+$(cat "$work/uris-err")"
+  read -r resolved_url _ size sha <<<"${resolved//\'/}"
+  sha="${sha#SHA256:}"
 
-  filename="$(printf '%s\n' "$show" | awk '$1 == "Filename:" { print $2; exit }')"
-  sha="$(printf '%s\n' "$show" | awk '$1 == "SHA256:" { print $2; exit }')"
-  size="$(printf '%s\n' "$show" | awk '$1 == "Size:" { print $2; exit }')"
+  [ -n "$resolved_url" ] && [ -n "$sha" ] && [ -n "$size" ] ||
+    die "APT returned no usable entry for ${package}:${arch}=${version}: $resolved"
 
-  # apt-cache exits 0 with empty output for a version that is not in the index,
-  # so these checks are the real guard, not the exit status above.
-  [ -n "$filename" ] && [ -n "$sha" ] && [ -n "$size" ] ||
-    die "${package} ${version} is not listed in the signed $arch index"
-
-  # The entry APT resolved must be the exact file the manifest points at.
-  [ "$repo_uri/$filename" = "$url" ] ||
-    die "signed index lists $repo_uri/$filename for ${package}:${arch}=${version}, manifest points at $url"
+  # APT's own URL for the resolved package must be the one the manifest points
+  # at: this is what ties the verified index entry to the file the build fetches.
+  [ "$resolved_url" = "$url" ] ||
+    die "signed index resolves ${package}:${arch}=${version} to $resolved_url, manifest points at $url"
 
   printf '%s %s %s\n' "$version" "$sha" "$size"
 }
