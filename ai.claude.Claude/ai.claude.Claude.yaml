@@ -4,7 +4,7 @@ runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 base: org.electronjs.Electron2.BaseApp
 base-version: "25.08"
-command: claude
+command: claude-desktop
 tags: [proprietary]
 separate-locales: false
 add-extensions:
@@ -89,7 +89,7 @@ modules:
   - name: claude
     buildsystem: simple
     build-commands:
-      - install -Dm755 claude.sh /app/bin/claude
+      - install -Dm755 claude.sh /app/bin/claude-desktop
       - install -Dm755 apply_extra /app/bin/apply_extra
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo
       - install -Dm644 ${FLATPAK_ID}.desktop -t /app/share/applications
