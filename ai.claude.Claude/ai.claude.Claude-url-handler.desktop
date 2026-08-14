@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Claude URL Handler
 Comment=Handle Claude login links
-Exec=claude %u
+Exec=claude-desktop %u
 Icon=ai.claude.Claude
 Type=Application
 Terminal=false

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Claude
 Comment=Claude Desktop
-Exec=claude %u
+Exec=claude-desktop %u
 Icon=ai.claude.Claude
 Type=Application
 Terminal=false
