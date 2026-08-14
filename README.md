@@ -76,6 +76,49 @@ your shell and stored as an absolute path. That is fine because the sandbox
 keeps the host's home path, but the override has to be redone if that path ever
 changes. Undo it with `--unset-env=CLAUDE_CONFIG_DIR`.
 
+## Adding tools to the sandbox
+
+The sandbox ships Node (via the auto-installed `org.freedesktop.Sdk.Extension.node24`,
+so `npx`-based MCP servers work out of the box). Anything beyond that can be
+added with Flatpak extensions, using the same two mechanisms as the VS Code
+Flatpak.
+
+**Tool extensions** are picked up automatically. The manifest declares the
+`com.visualstudio.code.tool` extension point, so the extensions built for VS Code
+install here unmodified — note the `//25.08` branch, which has to match:
+
+```sh
+flatpak install flathub com.visualstudio.code.tool.podman//25.08
+```
+
+Each one mounts at `/app/tools/<name>`, and its `bin/` is appended to `PATH` at
+launch. `com.visualstudio.code.tool.fish` and `.tool.git-lfs` work the same way.
+
+**SDK extensions** are opt-in, gated by `FLATPAK_ENABLE_SDK_EXT`. Because the app
+runs on `org.freedesktop.Sdk`, any installed `org.freedesktop.Sdk.Extension.*` is
+already mounted at `/usr/lib/sdk/<name>`; the variable selects which of them to
+actually enable, as a comma-separated list of short names:
+
+```sh
+flatpak install flathub org.freedesktop.Sdk.Extension.golang//25.08
+flatpak run --env=FLATPAK_ENABLE_SDK_EXT=golang ai.claude.Claude
+```
+
+Use `*` to enable everything installed. To make it stick across launches — so the
+desktop entry and URL handler get it too:
+
+```sh
+flatpak override --user --env=FLATPAK_ENABLE_SDK_EXT=golang,dotnet ai.claude.Claude
+```
+
+Each extension is enabled through its own `enable.sh` where it ships one, falling
+back to putting `bin/` on `PATH`. Requesting one that isn't installed logs a line
+and is otherwise ignored. The launcher records what it wired up:
+
+```sh
+tail ~/.var/app/ai.claude.Claude/cache/claude-flatpak/launcher.log
+```
+
 ## Updating Claude
 
 Run:
