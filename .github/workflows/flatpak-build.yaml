@@ -120,9 +120,13 @@ jobs:
           curl -fsSL https://downloads.claude.ai/claude-desktop/key.asc -o upstream-key.asc
           # Compare primary fingerprints rather than armor bytes: what the script
           # pins is the fingerprint, so a re-export or an added subkey should not
-          # redden CI, while an actual key change must.
+          # redden CI, while an actual key change must. Dearmor first -- gpg
+          # --show-keys ignores armor blocks not labelled "PGP PUBLIC KEY BLOCK",
+          # so reading the armored file directly would miss a relabelled second
+          # key that APT would nonetheless load and trust.
           fingerprints() {
-            gpg --batch --with-colons --show-keys "$1" |
+            gpg --dearmor < "$1" |
+              gpg --batch --with-colons --show-keys |
               awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
           }
           if [ "$(fingerprints ${APP_ID}/anthropic-apt-key.asc)" != "$(fingerprints upstream-key.asc)" ]; then

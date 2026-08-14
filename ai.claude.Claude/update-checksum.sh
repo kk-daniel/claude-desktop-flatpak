@@ -31,10 +31,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Assert the vendored key holds exactly the pinned primary key. Checking the
-# whole set matters: APT trusts every key in the Signed-By file, so an appended
-# one would be just as authoritative as the pinned one.
-if ! gpg --batch --with-colons --show-keys "$key" >"$work/keys" 2>"$work/keys-err"; then
+# Dearmor first, and hand APT this exact file, so that what we enumerate below
+# and what APT trusts are the same bytes by construction. Enumerating the
+# armored file instead would be a real bypass: `gpg --show-keys` parses only
+# blocks labelled "PGP PUBLIC KEY BLOCK" and silently ignores one labelled, say,
+# "PGP ARMORED FILE", while APT's verifier decodes every block and trusts every
+# key it finds -- so a second key could ride along invisible to this check.
+if ! gpg --dearmor < "$key" > "$work/trusted.gpg" 2>"$work/keys-err"; then
+  die "cannot dearmor $key as an OpenPGP key file:
+$(cat "$work/keys-err")"
+fi
+
+# Assert the keyring holds exactly the pinned primary key. Checking the whole
+# set matters: APT trusts every key in it, so an appended one would be just as
+# authoritative as the pinned one.
+if ! gpg --batch --with-colons --show-keys "$work/trusted.gpg" >"$work/keys" 2>"$work/keys-err"; then
   die "cannot read $key as an OpenPGP key file:
 $(cat "$work/keys-err")"
 fi
@@ -61,7 +72,6 @@ mkdir -p "$root/etc/apt/sources.list.d" "$root/etc/apt/apt.conf.d" \
   "$root/etc/apt/preferences.d" "$root/var/lib/apt/lists/partial" \
   "$root/var/lib/dpkg" "$root/var/cache/apt/archives/partial"
 : > "$root/var/lib/dpkg/status"
-cp -- "$key" "$root/etc/apt/signed-by.asc"
 
 cat > "$root/etc/apt/sources.list.d/${package}.sources" <<EOF
 Types: deb
@@ -69,7 +79,7 @@ URIs: $repo_uri
 Suites: $suite
 Components: $component
 Architectures: amd64 arm64
-Signed-By: $root/etc/apt/signed-by.asc
+Signed-By: $work/trusted.gpg
 EOF
 
 cat > "$root/apt.conf" <<EOF
@@ -102,10 +112,20 @@ for arch in amd64 arm64; do
     die "APT produced no verified $arch index"
 done
 
+# Only a real `url:` key of a `type: extra-data` source counts, at exactly the
+# indentation of that source's own keys. Anything looser also matches the URL in
+# a comment, or one nested a level deeper under an ignored `x-` property --
+# neither of which flatpak-builder fetches. That would let a manifest show
+# genuine URLs to this script while building from entirely different ones.
 manifest_url() {
   local arch="$1"
   awk -v suffix="_${arch}.deb" '
-    /url: https:\/\/downloads\.claude\.ai\/claude-desktop\/apt\// && index($0, suffix) {
+    { match($0, /^ */); ind = RLENGTH }
+    /^ *- / { extra = 0; keyind = ind + 2 }
+    /^ *(- +)?type: +extra-data *$/ { extra = 1 }
+    extra && ind == keyind &&
+      /^ *url: +https:\/\/downloads\.claude\.ai\/claude-desktop\/apt\// &&
+      index($0, suffix) {
       print $2
       exit
     }
@@ -159,30 +179,37 @@ $(cat "$work/show-err")"
 # quietly matches nothing is otherwise indistinguishable from "already correct",
 # both to this script and to the CI check that runs it.
 write_manifest() {
-  local replaced
+  local counts hits urls strays
   manifest_tmp="$(mktemp "$manifest.XXXXXX")"
   chmod --reference="$manifest" "$manifest_tmp"
-  replaced="$(awk -v out="$manifest_tmp" \
+  counts="$(awk -v out="$manifest_tmp" \
     -v sha_amd64="$1" -v size_amd64="$2" \
     -v sha_arm64="$3" -v size_arm64="$4" '
-    /^[[:space:]]*-[[:space:]]/ { block = "" }
-    /url: https:\/\/downloads\.claude\.ai\/claude-desktop\/apt\// {
-      if (index($0, "_amd64.deb")) block = "amd64"
-      else if (index($0, "_arm64.deb")) block = "arm64"
+    { match($0, /^ */); ind = RLENGTH; real = 0 }
+    /^ *- / { block = ""; extra = 0; keyind = ind + 2 }
+    /^ *(- +)?type: +extra-data *$/ { extra = 1 }
+    extra && ind == keyind &&
+      /^ *url: +https:\/\/downloads\.claude\.ai\/claude-desktop\/apt\// {
+      if (index($0, "_amd64.deb")) { block = "amd64"; urls++; real = 1 }
+      else if (index($0, "_arm64.deb")) { block = "arm64"; urls++; real = 1 }
     }
-    block != "" && /^[[:space:]]*sha256: / {
+    # Any other mention of a pool .deb is a stray: it means the file holds a URL
+    # this script would verify but flatpak-builder would not fetch, or vice versa.
+    !real && /downloads\.claude\.ai\/claude-desktop\/apt\/.*\/pool\/.*claude-desktop_.*\.deb/ { strays++ }
+    block != "" && ind == keyind && /^ *sha256: / {
       sub(/sha256: .*/, "sha256: " (block == "amd64" ? sha_amd64 : sha_arm64))
       hits++
     }
-    block != "" && /^[[:space:]]*size: / {
+    block != "" && ind == keyind && /^ *size: / {
       sub(/size: .*/, "size: " (block == "amd64" ? size_amd64 : size_arm64))
       hits++
     }
     { print > out }
-    END { print hits + 0 }
+    END { print hits + 0, urls + 0, strays + 0 }
   ' "$manifest")"
-  [ "$replaced" = "4" ] ||
-    die "expected to rewrite 4 manifest fields, rewrote $replaced; has the manifest layout changed?"
+  read -r hits urls strays <<<"$counts"
+  { [ "$hits" = "4" ] && [ "$urls" = "2" ] && [ "$strays" = "0" ]; } ||
+    die "manifest layout check failed: rewrote $hits/4 fields across $urls/2 extra-data sources, with $strays stray pool URL(s) the build would not fetch"
   mv "$manifest_tmp" "$manifest"
   manifest_tmp=""
 }
