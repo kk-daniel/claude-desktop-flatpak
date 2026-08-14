@@ -13,3 +13,6 @@
 
 # Temporary files
 *.tmp
+
+# Python bytecode from the checksum updater
+__pycache__/
