@@ -129,7 +129,19 @@ jobs:
               gpg --batch --with-colons --show-keys |
               awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
           }
-          if [ "$(fingerprints ${APP_ID}/anthropic-apt-key.asc)" != "$(fingerprints upstream-key.asc)" ]; then
+          # Assign before comparing. Inside `if [ "$(...)" != "$(...)" ]` the
+          # substitutions' exit statuses are discarded and set -e is suppressed,
+          # so a gpg that failed on both files compared "" against "" and the
+          # step passed having verified nothing -- the one way a tripwire must
+          # not fail. As plain assignments, pipefail and set -e abort instead.
+          vendored="$(fingerprints "${APP_ID}/anthropic-apt-key.asc")"
+          upstream="$(fingerprints upstream-key.asc)"
+          # Covers the remaining case: gpg exits 0 but yields no key at all.
+          if [ -z "$vendored" ] || [ -z "$upstream" ]; then
+            echo "::error::No OpenPGP key could be read from the vendored file or from downloads.claude.ai/claude-desktop/key.asc, so the keys were never actually compared."
+            exit 1
+          fi
+          if [ "$vendored" != "$upstream" ]; then
             echo "::error::Vendored signing key does not match downloads.claude.ai/claude-desktop/key.asc. If Anthropic rotated the key, re-vendor it and update the pinned fingerprint in update-checksum.py together -- never one without the other."
             exit 1
           fi
