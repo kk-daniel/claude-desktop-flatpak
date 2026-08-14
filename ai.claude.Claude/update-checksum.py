@@ -25,22 +25,20 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import urllib.parse
 from pathlib import Path
-from typing import NoReturn
 
-try:
-    import yaml
-except ModuleNotFoundError:
-    sys.exit(
-        f"Error: PyYAML is required but is not available to {sys.executable}.\n"
-        "The manifest is parsed with the same libyaml flatpak-builder uses, so a\n"
-        "structural check is possible at all. Install it (dnf install\n"
-        "python3-pyyaml / apt install python3-yaml), or run this script with an\n"
-        "interpreter that has it."
-    )
+# yaml comes via manifest_pins so the missing-PyYAML message lives in one place.
+from manifest_pins import (
+    die,
+    field,
+    loaded_sources,
+    replace_scalars,
+    source_nodes,
+    write_atomically,
+    yaml,
+)
 
 HERE = Path(__file__).resolve().parent
 MANIFEST = HERE / "ai.claude.Claude.yaml"
@@ -64,10 +62,6 @@ POOL_URL = re.compile(
     + re.escape(PACKAGE)
     + r"_(?P<version>[0-9][^_/\s]*)_(?P<arch>amd64|arm64)\.deb\Z"
 )
-
-
-def die(message: str) -> NoReturn:
-    sys.exit(f"Error: {message}")
 
 
 def run(argv, *, env=None):
@@ -183,20 +177,7 @@ def manifest_sources(node) -> dict:
     sources flatpak-builder will fetch.
     """
 
-    def field(mapping, key):
-        for k, v in mapping.value:
-            if getattr(k, "value", None) == key:
-                return v
-        return None
-
-    extra_data = []
-    for module in field(node, "modules").value:
-        sources = field(module, "sources")
-        if sources is None:
-            continue
-        for source in sources.value:
-            if getattr(field(source, "type"), "value", None) == "extra-data":
-                extra_data.append(source)
+    extra_data = source_nodes(node, "extra-data")
 
     # Any extra-data source beyond the two .debs would be fetched by the build
     # but pinned by nothing here, so refuse rather than silently ignore it.
@@ -273,29 +254,6 @@ def resolve(arch: str, version: str, env: dict) -> tuple[str, str, str]:
     return urllib.parse.unquote(url), size, digest[len("SHA256:") :]
 
 
-def write_manifest(text: str, sources: dict, resolved: dict) -> str:
-    """Replace each sha256/size scalar in place, by node mark.
-
-    Editing by mark keeps every comment and every byte we are not pinning, while
-    still targeting the exact scalars the parser identified.
-    """
-    lines = text.split("\n")
-    edits = []
-    for arch in ARCHES:
-        for key, value in (
-            ("sha256", resolved[arch]["sha256"]),
-            ("size", resolved[arch]["size"]),
-        ):
-            node = sources[arch][key]
-            edits.append((node.start_mark.line, node.start_mark.column, node.end_mark.column, value))
-
-    # One edit per line, so applying them independently is safe.
-    for line_no, start, end, value in edits:
-        line = lines[line_no]
-        lines[line_no] = line[:start] + value + line[end:]
-    return "\n".join(lines)
-
-
 def check_written(text: str, resolved: dict) -> None:
     """Re-parse the result and assert it says what we meant it to say.
 
@@ -303,14 +261,7 @@ def check_written(text: str, resolved: dict) -> None:
     made -- it asks the parser flatpak-builder uses what the build will now
     fetch, and requires that to be exactly the verified sources.
     """
-    document = yaml.safe_load(text)
-    extra_data = [
-        source
-        for module in document.get("modules", [])
-        if isinstance(module, dict)
-        for source in module.get("sources", []) or []
-        if isinstance(source, dict) and source.get("type") == "extra-data"
-    ]
+    extra_data = loaded_sources(yaml.safe_load(text), "extra-data")
     if len(extra_data) != len(ARCHES):
         die(f"after rewriting, {MANIFEST.name} has {len(extra_data)} extra-data sources")
 
@@ -365,23 +316,18 @@ def main() -> None:
                 + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
             )
 
-        updated = write_manifest(text, sources, resolved)
-        check_written(updated, resolved)
-
-        # Write beside the manifest so the rename stays on one filesystem, and
-        # carry the manifest's own mode rather than the temp file's 0600.
-        mode = MANIFEST.stat().st_mode
-        handle = tempfile.NamedTemporaryFile(
-            "w", dir=MANIFEST.parent, prefix=MANIFEST.name + ".", delete=False
+        # Editing by node mark keeps every comment and every byte not being
+        # pinned, while still targeting the exact scalars the parser identified.
+        updated = replace_scalars(
+            text,
+            [
+                (sources[arch][key], resolved[arch][key])
+                for arch in ARCHES
+                for key in ("sha256", "size")
+            ],
         )
-        try:
-            handle.write(updated)
-            handle.close()
-            os.chmod(handle.name, mode)
-            os.replace(handle.name, MANIFEST)
-        except BaseException:
-            os.unlink(handle.name)
-            raise
+        check_written(updated, resolved)
+        write_atomically(MANIFEST, updated)
 
     version = versions.pop()
     print(f"Verified {PACKAGE} {version} against the signed index")
