@@ -20,20 +20,23 @@ Run:
 ./ai.claude.Claude/update-metainfo.sh
 ```
 
-The checksum updater verifies Anthropic's APT release index against the signing
-key pinned in `ai.claude.Claude/anthropic-apt-key.asc`
-(`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`), then copies each .deb's
-`sha256` and `size` out of the signed `Packages` index into the manifest,
-keeping the `x86_64` and `aarch64` entries in sync. Anything it cannot trace
-back to that signature is a hard error: a revoked or expired key, an expired or
-missing `Valid-Until`, a `Release` that does not identify itself as this
-repository, or a version skew between the two architectures. It needs `gpg`,
-`gpgv`, `curl` and GNU `date`.
+The checksum updater hands the verification to APT itself. It builds a
+throwaway APT root pointed at Anthropic's repository, with `Signed-By` set to
+the key vendored at `ai.claude.Claude/anthropic-apt-key.asc`, and runs
+`apt-get update` against it — so the Release signature, the suite and codename,
+and every index hash are checked by the same code Debian and Ubuntu rely on,
+rather than by this repo. It then reads each `.deb`'s `sha256` and `size` out of
+the verified index with `apt-cache show`, and writes them into the manifest.
 
-It reads the `.deb` checksums out of the signed index rather than downloading
-them. To additionally fetch both `.deb`s and hash them — worth it before cutting
-a release, since nothing else ever verifies the aarch64 bytes — run:
+Nothing is installed and no system APT state is read or written.
 
-```sh
-VERIFY_DEB_BYTES=1 ./ai.claude.Claude/update-checksum.sh
-```
+Two things APT cannot know are checked here: that the vendored key file holds
+exactly the pinned fingerprint
+(`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` — APT would trust any key
+placed in that file), and that both architectures name the same version. The
+manifest is rewritten only after both architectures resolve, and the rewrite
+fails unless it replaces exactly the four expected fields.
+
+It needs `apt-get` and `apt-cache` (any recent APT — a Homebrew one on a
+non-Debian host is fine, the transport methods are located relative to the
+binary), plus `gpg` and GNU coreutils.
