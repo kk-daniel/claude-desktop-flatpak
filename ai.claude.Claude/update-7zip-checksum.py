@@ -142,28 +142,71 @@ def sha256_of(url: str, work: Path) -> str:
     prefix without raising and it gets hashed as though it were the archive.
     """
     archive = work / "archive.tar.xz"
-    result = run(["curl", "-fL", "--retry", "3", "-o", str(archive), url])
+    # --retry is not a timeout: without these a stalled mirror blocks until the
+    # job's own limit, which on Actions is six hours.
+    result = run(
+        [
+            "curl", "-fL", "--retry", "3",
+            "--connect-timeout", "30", "--max-time", "600",
+            "-o", str(archive), url,
+        ]
+    )
     if result.returncode != 0:
         die(f"cannot fetch {url}: curl exited {result.returncode}\n{result.stderr.strip()}")
     with archive.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def write_manifest(text: str, sources: dict, resolved: dict) -> str:
-    """Replace each sha256 scalar in place, by node mark.
+def value_span(text: str, node) -> tuple[int, int]:
+    """The span of a scalar's own value, excluding any &anchor or !!tag.
 
-    Editing by mark keeps every comment and every byte we are not pinning, while
-    still targeting the exact scalars the parser identified.
+    A ScalarNode's start_mark points at its properties, not its value, so
+    replacing the whole extent of `sha256: &pin !!str abc` deletes `&pin !!str`
+    -- silently when nothing references the anchor, and leaving a dangling alias
+    when something does. Properties are whitespace-delimited tokens starting
+    with ! or &, and a value cannot start with either, so skipping them is
+    unambiguous.
     """
-    lines = text.split("\n")
-    # One edit per line, so applying them independently is safe.
+    start, end = node.start_mark.index, node.end_mark.index
+    while start < end and text[start] in "!&":
+        while start < end and not text[start].isspace():
+            start += 1
+        while start < end and text[start].isspace():
+            start += 1
+    return start, end
+
+
+def write_manifest(text: str, sources: dict, resolved: dict) -> str:
+    """Replace each sha256 value in place, by node mark.
+
+    Editing by mark keeps every comment and every byte we are not pinning. Only
+    the value is replaced, and it is re-emitted in the style it already had:
+    dropping the quotes off a quoted scalar still parses, so nothing downstream
+    notices, but it is a whole-line diff that verify-pins reports as "pins do
+    not match the published archives" -- which would be false.
+
+    Offsets are absolute, not (line, column): PyYAML counts NEL, LS and PS as
+    line breaks where str.split("\\n") does not, so line bookkeeping can land a
+    rewrite on the wrong line of a file containing any of them.
+    """
+    edits = []
     for arch in ARCHES:
         node = sources[arch]["sha256"]
-        line = lines[node.start_mark.line]
-        lines[node.start_mark.line] = (
-            line[: node.start_mark.column] + resolved[arch]["sha256"] + line[node.end_mark.column :]
-        )
-    return "\n".join(lines)
+        # The C loader reports a plain scalar's style as '' where the Python one
+        # gives None; normalise so this does not depend on which is used.
+        style = node.style or None
+        value = resolved[arch]["sha256"]
+        if style in ("'", '"'):
+            value = f"{style}{value}{style}"
+        elif style is not None:
+            die(f"cannot rewrite a block scalar (style {style!r}) for {arch}")
+        edits.append((node, value))
+
+    # Descending, so replacing one value cannot shift the offsets of the next.
+    for node, value in sorted(edits, key=lambda e: e[0].start_mark.index, reverse=True):
+        start, end = value_span(text, node)
+        text = text[:start] + value + text[end:]
+    return text
 
 
 def check_written(text: str, resolved: dict) -> None:
@@ -207,7 +250,7 @@ def check_written(text: str, resolved: dict) -> None:
 
 
 def main() -> None:
-    text = MANIFEST.read_text()
+    text = MANIFEST.read_text(encoding="utf-8")
     sources = manifest_sources(yaml.compose(text))
 
     # Checked before anything is fetched: resolving first and finding the skew
@@ -243,7 +286,7 @@ def main() -> None:
     # carry the manifest's own mode rather than the temp file's 0600.
     mode = MANIFEST.stat().st_mode
     handle = tempfile.NamedTemporaryFile(
-        "w", dir=MANIFEST.parent, prefix=MANIFEST.name + ".", delete=False
+        "w", dir=MANIFEST.parent, prefix=MANIFEST.name + ".", delete=False, encoding="utf-8"
     )
     try:
         handle.write(updated)
