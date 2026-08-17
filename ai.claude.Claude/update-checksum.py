@@ -20,7 +20,6 @@ losing to legal YAML the scanner did not model.
 
 from __future__ import annotations
 
-import glob
 import os
 import re
 import shutil
@@ -148,14 +147,21 @@ def apt_environment(work: Path, keyring: Path) -> dict:
     config.write_text(
         f'Dir "{root}";\n'
         'Dir::State "var/lib/apt";\n'
+        # Not APT's default everywhere: the built-in default for this has been
+        # an absolute path in some versions, and Dir does not re-root absolute
+        # values. Dropping it would let a non-Debian host's real dpkg status be
+        # read, which is exactly what this throwaway root exists to avoid.
         f'Dir::State::status "{root}/var/lib/dpkg/status";\n'
         'Dir::Cache "var/cache/apt";\n'
         'Dir::Etc "etc/apt";\n'
         f'Dir::Bin::methods "{methods}";\n'
-        'Dir::Bin::dpkg "/bin/false";\n'
         f'APT::Architecture "{ARCHES[0]}";\n'
         "APT::Architectures { " + " ".join(f'"{a}";' for a in ARCHES) + " };\n"
         'Acquire::Retries "3";\n'
+        # Without these a stalled mirror blocks until the job's own limit, which
+        # on Actions is six hours.
+        'Acquire::http::Timeout "30";\n'
+        'Acquire::https::Timeout "30";\n'
     )
     return {**os.environ, "APT_CONFIG": str(config), "LC_ALL": "C"}
 
@@ -171,8 +177,13 @@ def apt_update(env: dict, root: Path) -> None:
 
     # APT writes no index when verification fails, so their presence is a second
     # confirmation rather than a restatement of the exit status.
+    lists = root / "var/lib/apt/lists"
     for arch in ARCHES:
-        if not glob.glob(str(root / f"var/lib/apt/lists/*_binary-{arch}_Packages")):
+        # Path.glob, not glob.glob: the latter treats its whole argument as a
+        # pattern, and the argument here is built from $TMPDIR, so a temp
+        # directory containing [ or * made this report a missing index that APT
+        # had in fact produced.
+        if not any(lists.glob(f"*_binary-{arch}_Packages")):
             die(f"APT produced no verified {arch} index")
 
 
