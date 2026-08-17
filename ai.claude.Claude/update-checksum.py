@@ -12,10 +12,13 @@ Two things APT cannot know are asserted here: that the vendored key file holds
 exactly the pinned fingerprint (APT trusts any key placed in the Signed-By
 file), and that both architectures name the same version.
 
-The manifest is read and validated with PyYAML -- the same libyaml that
-flatpak-builder itself uses -- so that what this script verifies and what the
-build fetches cannot disagree. Earlier line-oriented versions of this check kept
-losing to legal YAML the scanner did not model.
+The manifest is read and validated with PyYAML rather than scanned line by line,
+because earlier line-oriented versions of this check kept losing to legal YAML
+the scanner did not model. Note what that does and does not claim: PyYAML is not
+the parser flatpak-builder links against, and yaml.compose() below uses the
+pure-Python loader even where libyaml is installed. The guarantee is "a real
+YAML parser, and the rewrite re-read through one before it lands" -- see
+check_written -- not "byte-for-byte the same implementation as the builder".
 """
 
 from __future__ import annotations
@@ -35,10 +38,10 @@ try:
 except ModuleNotFoundError:
     sys.exit(
         f"Error: PyYAML is required but is not available to {sys.executable}.\n"
-        "The manifest is parsed with the same libyaml flatpak-builder uses, so a\n"
-        "structural check is possible at all. Install it (dnf install\n"
-        "python3-pyyaml / apt install python3-yaml), or run this script with an\n"
-        "interpreter that has it."
+        "The manifest is parsed as YAML rather than scanned, so a structural\n"
+        "check is possible at all. Install it (dnf install python3-pyyaml /\n"
+        "apt install python3-yaml), or run this script with an interpreter that\n"
+        "has it."
     )
 
 HERE = Path(__file__).resolve().parent

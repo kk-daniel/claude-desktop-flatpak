@@ -35,9 +35,11 @@ exactly the pinned fingerprint
 (`31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE` — APT would trust any key
 placed in that file), and that both architectures name the same version.
 
-The manifest is read, and the result validated, with PyYAML — the same libyaml
-flatpak-builder uses — so that the sources this script verifies and the sources
-the build fetches cannot disagree. It refuses to run if the manifest holds any
+The manifest is read, and the result validated, with PyYAML rather than scanned
+line by line, because line-oriented versions of this check kept losing to legal
+YAML the scanner did not model. PyYAML is not the parser flatpak-builder links
+against, so what this buys is a real parser and a rewrite re-read through one —
+not a byte-for-byte match with the builder. It refuses to run if the manifest holds any
 `extra-data` source other than the two `.deb`s, and after rewriting it re-parses
 the file and requires the two sources to carry exactly the URLs, checksums and
 sizes it just verified. Only then is the new manifest moved into place.
@@ -49,3 +51,32 @@ comes from Homebrew, that prefix's `python3` may shadow the system one and lack
 PyYAML. The script names the interpreter it is running under when the import
 fails, and `/usr/bin/python3 ./ai.claude.Claude/update-checksum.py` is the
 straightforward fix.
+
+## Updating 7-Zip
+
+```sh
+./ai.claude.Claude/update-7zip-checksum.py
+```
+
+There is nothing to verify against here. The ip7z releases publish neither a
+checksum file nor a signature, so the script downloads each archive and hashes
+it — trust on first use, re-affirmed on every bump. That is a property of
+upstream, not a shortcut in this repo, and it is the reason the two updaters
+read so differently.
+
+What it does check, all before a byte is fetched: every source in the `7zip`
+module is an ip7z release archive it knows how to pin, each source's
+`only-arches` matches the architecture in its own URL, the release version
+matches the filename stem (`26.02` ↔ `7z2602`), and both architectures are on
+one version. The `only-arches` check is the one with teeth — a swapped pair
+would build one architecture's flatpak around the other's binary, and nothing
+downstream would notice.
+
+The manifest edit works like the Claude one: the sources are located
+structurally, each `sha256` is replaced by node mark so comments and formatting
+survive, and the result is re-parsed and required to carry exactly what was
+hashed. It needs `curl` and a `python3` with PyYAML.
+
+Both updaters also take `--print-version`, which prints `name=version` and exits
+without touching the network. CI uses it to check that refreshing checksums did
+not move a version.
