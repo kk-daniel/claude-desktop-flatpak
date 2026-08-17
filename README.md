@@ -11,6 +11,46 @@ into it.
 1. `flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo`
 2. `flatpak-builder --force-clean --user --install-deps-from=flathub --repo=repo --install builddir ai.claude.Claude/ai.claude.Claude.yaml`
 
+## Keyring and staying signed in
+
+Claude Desktop keeps its session token through Electron's `safeStorage`, which
+is Chromium's `os_crypt` underneath. That picks a keyring backend from
+`XDG_CURRENT_DESKTOP` and reaches it over the session bus, so the backend has to
+be granted in the manifest. This build grants only KWallet
+(`org.kde.kwalletd5`, `org.kde.kwalletd6`).
+
+**On GNOME and other non-KDE desktops the sign-in will not be saved.** There
+Chromium picks `gnome-libsecret`, which talks to `org.freedesktop.secrets`, and
+that name is deliberately not granted. The app notices the backend is missing
+and says so — "Your sign-in won't be saved on this device. Install and unlock a
+system keyring…" — and you get a fresh login prompt on every start. Everything
+else works.
+
+The grant is withheld because Secret Service has no per-application access
+control: a client that can reach `org.freedesktop.secrets` can enumerate
+collections and read secrets from any *unlocked* one, and on GNOME the login
+keyring is unlocked automatically at login by `gnome-keyring`'s PAM module. The
+grant would therefore hand this app every other unlocked secret on the session
+bus — saved browser passwords, Wi-Fi keys, other apps' tokens. Flatpak's D-Bus
+proxy filters by bus name only, so there is no way to narrow it to one
+collection.
+
+`xdg-desktop-portal`'s `org.freedesktop.portal.Secret` is the right shape for
+this — one per-application secret, no access to anyone else's — but it cannot be
+used yet. Its key provider lives in `os_crypt::async`, whereas Electron's
+`safeStorage` is built on the synchronous `OSCrypt`, whose backends are only
+`kwallet*`, `gnome-libsecret` and `basic`. Wiring the two together is an
+upstream Electron change; once it lands, the KWallet grants can go too.
+
+If you would rather have the persistent login than the isolation, add the grant
+locally — it is your call, not something this repo will ship:
+
+```sh
+flatpak override --user --talk-name=org.freedesktop.secrets ai.claude.Claude
+```
+
+Undo it with `--no-talk-name=org.freedesktop.secrets`.
+
 ## Updating Claude
 
 Run:
