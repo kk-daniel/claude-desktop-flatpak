@@ -18,8 +18,6 @@ build fetches cannot disagree. Earlier line-oriented versions of this check kept
 losing to legal YAML the scanner did not model.
 """
 
-from __future__ import annotations
-
 import glob
 import os
 import shutil

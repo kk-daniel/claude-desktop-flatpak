@@ -9,8 +9,6 @@ Rewrites are applied by node mark rather than by re-serialising the document, so
 comments and formatting survive untouched.
 """
 
-from __future__ import annotations
-
 import contextlib
 import dataclasses
 import os
@@ -78,7 +76,7 @@ ARCHIVE_URL = re.compile(
 )
 
 
-def _stem_matches_release(match) -> str | None:
+def _stem_matches_release(match):
     version, compact = match.group("version"), match.group("compact")
     if version.replace(".", "") != compact:
         return f"release {version} does not match the filename stem 7z{compact}"
@@ -98,11 +96,11 @@ class Pin:
     name: str
     label: str
     type: str
-    url: "re.Pattern"
-    arches: "Mapping[str, str]"
+    url: re.Pattern
+    arches: types.MappingProxyType
     pinned: tuple
-    fixed: "Mapping[str, str]" = types.MappingProxyType({})
-    check: "Callable" = lambda match: None
+    fixed: types.MappingProxyType = types.MappingProxyType({})
+    check: staticmethod = staticmethod(lambda match: None)
 
 
 CLAUDE = Pin(
