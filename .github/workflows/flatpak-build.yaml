@@ -55,12 +55,7 @@ jobs:
         id: dependency-versions-before
         run: |
           set -eo pipefail
-          versions="$(
-            {
-              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
-              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
-            } | sort
-          )"
+          versions="$(./${APP_ID}/manifest-versions.py)"
           {
             echo "versions<<EOF"
             printf "%s\n" "$versions"
@@ -81,12 +76,7 @@ jobs:
           BEFORE: ${{ steps.dependency-versions-before.outputs.versions }}
         run: |
           set -eo pipefail
-          after="$(
-            {
-              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
-              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
-            } | sort
-          )"
+          after="$(./${APP_ID}/manifest-versions.py)"
           if [ "$after" != "$BEFORE" ]; then
             echo "Dependency versions changed while refreshing checksums." >&2
             diff -u <(printf "%s\n" "$BEFORE") <(printf "%s\n" "$after") || true
@@ -168,6 +158,14 @@ jobs:
             echo "::error::Manifest sha256/size do not match Anthropic's signed index. Run ./${APP_ID}/update-checksum.py and commit the result."
             exit 1
           fi
+      - name: 7-Zip pins match the published archives
+        run: |
+          set -eo pipefail
+          ./${APP_ID}/update-7zip-checksum.py
+          if ! git diff --exit-code -- ${APP_ID}/${APP_ID}.yaml; then
+            echo "::error::Manifest 7-Zip sha256 do not match the published release assets. Run ./${APP_ID}/update-7zip-checksum.py and commit the result."
+            exit 1
+          fi
 
   extract-version:
     runs-on: ubuntu-latest
@@ -189,10 +187,9 @@ jobs:
         id: extract-version
         run: |
           set -eo pipefail
-          URL="$(grep -A 5 'filename: claude-desktop-amd64.deb' ${APP_ID}/${APP_ID}.yaml | grep -o 'url: .*' | head -1 | cut -d' ' -f2)"
-          VERSION="$(echo "$URL" | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_amd64\.deb$#\1#p')"
+          VERSION="$(./${APP_ID}/manifest-versions.py --pin claude)"
           if [ -z "$VERSION" ]; then
-            echo "Error: Could not extract version from URL: $URL" >&2
+            echo "Error: could not read the Claude version from the manifest" >&2
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"

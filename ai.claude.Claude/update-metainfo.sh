@@ -3,11 +3,13 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-url="$(grep -A 5 'filename: claude-desktop-amd64.deb' ai.claude.Claude.yaml | grep -o 'url: .*' | head -n 1 | cut -d' ' -f2)"
-version="$(printf '%s\n' "$url" | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_amd64\.deb$#\1#p')"
+# Read the version through the same audit the updaters use. The grep this
+# replaces depended on url: falling within five lines of filename:, an ordering
+# the updaters are free to rewrite.
+version="$(./manifest-versions.py --pin claude)"
 
 if [ -z "$version" ]; then
-  echo "Error: could not extract Claude version from URL: $url" >&2
+  echo "Error: could not read the Claude version from the manifest" >&2
   exit 1
 fi
 
