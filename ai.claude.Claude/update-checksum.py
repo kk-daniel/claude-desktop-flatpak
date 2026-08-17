@@ -18,7 +18,6 @@ build fetches cannot disagree. Earlier line-oriented versions of this check kept
 losing to legal YAML the scanner did not model.
 """
 
-import glob
 import os
 import shutil
 import subprocess
@@ -84,11 +83,11 @@ def pinned_keyring(work: Path) -> Path:
     # Collect primary fingerprints only: the `fpr` record following each `pub`.
     primaries, want = [], False
     for line in listing.stdout.splitlines():
-        field = line.split(":")
-        if field[0] == "pub":
+        record = line.split(":")
+        if record[0] == "pub":
             want = True
-        elif want and field[0] == "fpr":
-            primaries.append(field[9])
+        elif want and record[0] == "fpr":
+            primaries.append(record[9])
             want = False
 
     if primaries != [FINGERPRINT]:
@@ -134,14 +133,21 @@ def apt_environment(work: Path, keyring: Path) -> tuple[dict, Path]:
     config.write_text(
         f'Dir "{root}";\n'
         'Dir::State "var/lib/apt";\n'
+        # Not the default everywhere: APT's built-in default for this has been
+        # an absolute path in some versions, and Dir does not re-root absolute
+        # values. Dropping it would let a non-Debian host's real dpkg status be
+        # read, which is exactly what this root exists to avoid.
         f'Dir::State::status "{root}/var/lib/dpkg/status";\n'
         'Dir::Cache "var/cache/apt";\n'
         'Dir::Etc "etc/apt";\n'
         f'Dir::Bin::methods "{methods}";\n'
-        'Dir::Bin::dpkg "/bin/false";\n'
         f'APT::Architecture "{ARCHES[0]}";\n'
         "APT::Architectures { " + " ".join(f'"{a}";' for a in ARCHES) + " };\n"
         'Acquire::Retries "3";\n'
+        # Without this a stalled mirror blocks until the job's own limit, which
+        # on Actions is six hours.
+        'Acquire::http::Timeout "30";\n'
+        'Acquire::https::Timeout "30";\n'
     )
     return {**os.environ, "APT_CONFIG": str(config), "LC_ALL": "C"}, root
 
@@ -157,8 +163,12 @@ def apt_update(env: dict, root: Path) -> None:
 
     # APT writes no index when verification fails, so their presence is a second
     # confirmation rather than a restatement of the exit status.
+    lists = root / "var/lib/apt/lists"
     for arch in ARCHES:
-        if not glob.glob(str(root / f"var/lib/apt/lists/*_binary-{arch}_Packages")):
+        # Path.glob, not glob.glob: the latter treats the whole string as a
+        # pattern, so a $TMPDIR containing [ or * made this report a missing
+        # index that APT had in fact produced.
+        if not any(lists.glob(f"*_binary-{arch}_Packages")):
             die(f"APT produced no verified {arch} index")
 
 
