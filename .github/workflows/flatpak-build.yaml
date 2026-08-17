@@ -18,6 +18,20 @@ env:
   APP_ID: ai.claude.Claude
 
 jobs:
+  # Ungated on purpose: no `needs`, no `if`. The manifest audit is what decides
+  # which sources the build is allowed to fetch, and the shapes that break it --
+  # a source nested one module deep, an anchored scalar, a CRLF checkout -- are
+  # exactly the ones the committed manifest cannot exercise.
+  checks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Manifest audit and rewrite tests
+        run: python3 ${APP_ID}/test_manifest_pins.py
+
   post-renovate:
     runs-on: ubuntu-latest
     # Renovate branch names end with the group slug: renovate/<slug>, renovate/major-<slug>
