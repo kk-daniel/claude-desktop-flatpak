@@ -12,10 +12,8 @@ Two things APT cannot know are asserted here: that the vendored key file holds
 exactly the pinned fingerprint (APT trusts any key placed in the Signed-By
 file), and that both architectures name the same version.
 
-The manifest is read and validated with PyYAML -- the same libyaml that
-flatpak-builder itself uses -- so that what this script verifies and what the
-build fetches cannot disagree. Earlier line-oriented versions of this check kept
-losing to legal YAML the scanner did not model.
+Every source in the manifest is accounted for before anything is written, and
+the result is re-parsed and re-audited afterwards. See manifest_pins.py.
 """
 
 import os

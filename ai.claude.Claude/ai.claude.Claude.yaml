@@ -75,6 +75,12 @@ modules:
       - install -Dm755 7zz /app/bin/7zz
       - ln -s 7zz /app/bin/7z
     sources:
+      # These sha256 are trust-on-first-use, re-affirmed on every bump by
+      # update-7zip-checksum.py: ip7z publishes no checksum file and no
+      # signature, so hashing what we download is the strongest claim
+      # available. Weaker than the .deb pins below, which come from a signed
+      # index -- the two look identical in this file, so the difference is
+      # written down rather than inferred.
       - type: archive
         only-arches: [x86_64]
         url: https://github.com/ip7z/7zip/releases/download/26.02/7z2602-linux-x64.tar.xz
@@ -109,6 +115,9 @@ modules:
       # resources — so no Electron download, asar repack, or native stubs are
       # needed. Index:
       # https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages
+      # These sha256/size are resolved by update-checksum.py out of Anthropic's
+      # GPG-signed APT index, not from whatever the CDN served -- see the
+      # vendored key beside this manifest.
       - type: extra-data
         filename: claude-desktop-amd64.deb
         only-arches: [x86_64]

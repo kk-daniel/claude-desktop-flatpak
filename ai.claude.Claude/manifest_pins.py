@@ -1,9 +1,17 @@
 """Shared helpers for the manifest pin updaters.
 
-The manifest is read -- and every rewrite re-validated -- with PyYAML, which is
-libyaml, the same parser flatpak-builder uses. That is the whole point: a
-line-oriented scanner can be made to disagree with the builder about which
-sources exist and where they point, and earlier versions of these scripts were.
+The manifest is parsed as YAML rather than scanned line by line, and every
+rewrite is re-parsed and re-audited before it is written. That is the whole
+point: a line-oriented scanner can be made to disagree with flatpak-builder
+about which sources exist and where they point, and earlier versions of these
+scripts were, repeatedly.
+
+Note what is *not* claimed. PyYAML is not the parser flatpak-builder links
+against, and this module deliberately pins yaml.SafeLoader -- the pure-Python
+one -- because the C loader reports a plain scalar's style as '' where the
+Python one gives None, and style is load-bearing in replace_scalars. The
+guarantee is "a real YAML parser, and the result re-read before it lands", not
+"byte-for-byte the same implementation as the builder".
 
 Rewrites are applied by node mark rather than by re-serialising the document, so
 comments and formatting survive untouched.
@@ -28,8 +36,8 @@ try:
 except ModuleNotFoundError:
     sys.exit(
         f"Error: PyYAML is required but is not available to {sys.executable}.\n"
-        "The manifest is parsed with the same libyaml flatpak-builder uses, so a\n"
-        "structural check is possible at all. Install it (dnf install\n"
+        "The manifest is parsed as YAML rather than scanned, so a structural\n"
+        "check is possible at all. Install it (dnf install\n"
         "python3-pyyaml / apt install python3-yaml), or run this script with an\n"
         "interpreter that has it."
     )
