@@ -12,11 +12,13 @@ comments and formatting survive untouched.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import os
 import re
 import shutil
 import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import NoReturn
 
@@ -39,44 +41,315 @@ def die(message: str) -> NoReturn:
     sys.exit(f"Error: {message}")
 
 
-def field(mapping, key):
-    """Return the value node for `key` in a composed mapping node, or None."""
+def field(mapping, key, where=""):
+    """The value node for `key` in a composed mapping node, or None.
+
+    A duplicate key is an error. PyYAML happily composes both pairs of
+    `sha256: a` / `sha256: b`; a node walk like this one would take the first
+    while safe_load -- and flatpak-builder's own YAML reader -- take the last.
+    That is precisely the checker-disagrees-with-builder split these updaters
+    exist to rule out, so it is refused rather than resolved.
+    """
+    found = None
     for k, v in mapping.value:
         if getattr(k, "value", None) == key:
-            return v
-    return None
-
-
-def source_nodes(root, wanted_type: str) -> list:
-    """Every source node of the given `type:` across all modules."""
-    modules = field(root, "modules")
-    if modules is None:
-        die("manifest has no modules")
-    found = []
-    for module in modules.value:
-        sources = field(module, "sources")
-        if sources is None:
-            continue
-        for source in sources.value:
-            type_node = field(source, "type")
-            if type_node is not None and type_node.value == wanted_type:
-                found.append(source)
+            if found is not None:
+                die(f"{where or 'manifest'} has more than one {key}: key")
+            found = v
     return found
 
 
-def loaded_sources(document, wanted_type: str) -> list:
-    """The same selection against a plain safe_load'ed document.
+# ---------------------------------------------------------------------------
+# What this repo knows how to pin
+# ---------------------------------------------------------------------------
 
-    Used for the post-condition: it asks the parser what the build will now
-    fetch, without reference to how the edit was made.
+CLAUDE_REPO = "https://downloads.claude.ai/claude-desktop/apt/stable"
+
+POOL_URL = re.compile(
+    re.escape(CLAUDE_REPO)
+    + r"/pool/[^\s]+/claude-desktop_(?P<version>[0-9][^_/\s]*)_(?P<arch>amd64|arm64)\.deb\Z"
+)
+
+# 7-Zip names its tarballs after the version with the dots removed: release
+# 26.02 ships 7z2602-linux-x64.tar.xz.
+ARCHIVE_URL = re.compile(
+    r"https://github\.com/ip7z/7zip/releases/download/(?P<version>[0-9][0-9.]*)/"
+    r"7z(?P<compact>[0-9]+)-linux-(?P<arch>x64|arm64)\.tar\.xz\Z"
+)
+
+
+def _stem_matches_release(match) -> str | None:
+    version, compact = match.group("version"), match.group("compact")
+    if version.replace(".", "") != compact:
+        return f"release {version} does not match the filename stem 7z{compact}"
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class Pin:
+    """A family of manifest sources this repo knows how to pin.
+
+    `url` must carry named groups `arch` and `version`. `arches` maps the arch
+    as it appears in the URL to the value that must appear in `only-arches` --
+    the cross-check nothing performed before, which is why a swapped pair was
+    maintained as though it were correct.
     """
-    return [
-        source
-        for module in document.get("modules", [])
-        if isinstance(module, dict)
-        for source in module.get("sources") or []
-        if isinstance(source, dict) and source.get("type") == wanted_type
-    ]
+
+    name: str
+    label: str
+    type: str
+    url: "re.Pattern"
+    arches: "Mapping[str, str]"
+    pinned: tuple
+    fixed: "Mapping[str, str]" = types.MappingProxyType({})
+    check: "Callable" = lambda match: None
+
+
+CLAUDE = Pin(
+    name="claude",
+    label="Claude Desktop .deb",
+    type="extra-data",
+    url=POOL_URL,
+    arches=types.MappingProxyType({"amd64": "x86_64", "arm64": "aarch64"}),
+    pinned=("sha256", "size"),
+    # apply_extra looks for exactly these two names and nothing else, so the
+    # manifest's filename: is load-bearing at install time and was unchecked.
+    fixed=types.MappingProxyType({"filename": "claude-desktop-{arch}.deb"}),
+)
+
+SEVENZIP = Pin(
+    name="7zip",
+    label="7-Zip release archive",
+    type="archive",
+    url=ARCHIVE_URL,
+    arches=types.MappingProxyType({"x64": "x86_64", "arm64": "aarch64"}),
+    pinned=("sha256",),
+    check=_stem_matches_release,
+)
+
+PINS = (CLAUDE, SEVENZIP)
+
+
+# ---------------------------------------------------------------------------
+# The audit
+# ---------------------------------------------------------------------------
+
+# flatpak-builder's source types. Anything outside this set means the manifest
+# has grown a feature this module does not model, which is a reason to stop.
+KNOWN_TYPES = frozenset(
+    {
+        "archive", "file", "git", "bzr", "svn", "extra-data",
+        "dir", "patch", "shell", "script", "inline",
+    }
+)
+# Types that always fetch, and types that fetch only when given a url: rather
+# than a path:. Classifying by capability rather than by type name is what makes
+# "everything that fetches is accounted for" a statement about the document
+# instead of a statement about one type.
+ALWAYS_REMOTE = frozenset({"extra-data", "svn", "bzr"})
+URL_OR_PATH = frozenset({"archive", "file", "git"})
+
+
+@dataclasses.dataclass(frozen=True)
+class Source:
+    """One pinned source: where it is, what it points at, what we rewrite."""
+
+    where: str
+    url: str
+    version: str
+    values: dict
+
+
+def compose(text: str, where: str):
+    """Parse, with the loader named explicitly and errors reported as errors."""
+    try:
+        node = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as exc:
+        die(f"{where} is not valid YAML:\n{exc}")
+    if node is None:
+        die(f"{where} is empty")
+    return node
+
+
+def _sequence(node, where):
+    if not isinstance(node, yaml.SequenceNode):
+        die(f"{where} must be a list")
+    return node.value
+
+
+def _walk_sources(modules, where):
+    """Yield every (source node, path) in this module list, recursively.
+
+    flatpak-builder gives every module an optional `modules:` of its own, and it
+    fetches their sources like any other. Walking only the top level meant a
+    source nested one deep was invisible to both the check and the
+    post-condition -- reproduced with an extra-data source pointing anywhere at
+    all, which both updaters passed while reporting success.
+    """
+    for index, module in enumerate(_sequence(modules, where)):
+        at = f"{where}[{index}]"
+        if isinstance(module, yaml.ScalarNode):
+            die(
+                f"{at} is an included file ({module.value!r}). These updaters do "
+                "not follow includes: the sources one brings in would be fetched "
+                "by the build and pinned by nothing here."
+            )
+        if not isinstance(module, yaml.MappingNode):
+            die(f"{at} is not a module")
+
+        name_node = field(module, "name", at)
+        name = name_node.value if name_node is not None else at
+
+        sources = field(module, "sources", name)
+        if sources is not None:
+            for position, source in enumerate(_sequence(sources, f"{name}.sources")):
+                spot = f"{name}.sources[{position}]"
+                if isinstance(source, yaml.ScalarNode):
+                    die(
+                        f"{spot} is an included file ({source.value!r}). These "
+                        "updaters do not follow includes: its sources would be "
+                        "fetched by the build and pinned by nothing here."
+                    )
+                if not isinstance(source, yaml.MappingNode):
+                    die(f"{spot} is not a source")
+                yield source, spot
+
+        children = field(module, "modules", name)
+        if children is not None:
+            yield from _walk_sources(children, f"{name}.modules")
+
+
+def _classify(source, where, claimed):
+    """Account for one source: local, or claimed by exactly one Pin."""
+    type_node = field(source, "type", where)
+    if type_node is None:
+        die(f"{where} has no type:")
+    kind = type_node.value
+    if kind not in KNOWN_TYPES:
+        die(
+            f"{where} has source type {kind!r}, which manifest_pins does not "
+            "model. Teach it about the type before adding one to the manifest."
+        )
+    if field(source, "mirror-urls", where) is not None:
+        die(f"{where} has mirror-urls:, which these updaters do not model")
+
+    url_node = field(source, "url", where)
+    path_node = field(source, "path", where)
+    if kind in URL_OR_PATH and (url_node is None) == (path_node is None):
+        die(f"{where} must have exactly one of url: and path:")
+    if url_node is None:
+        if kind in ALWAYS_REMOTE:
+            die(f"{where} is a {kind} source with no url:")
+        return  # genuinely local; there is nothing here to pin
+
+    for pin in PINS:
+        if pin.type == kind:
+            match = pin.url.fullmatch(url_node.value)
+            if match is not None:
+                _record(pin, match, source, where, claimed)
+                return
+    die(
+        f"{where} fetches {url_node.value}, which nothing in manifest_pins "
+        "pins. Every source the build downloads has to be accounted for here: "
+        "add a Pin, and an updater that resolves it, before adding the source."
+    )
+
+
+def _record(pin, match, source, where, claimed):
+    arch = match.group("arch")
+    problem = pin.check(match)
+    if problem is not None:
+        die(f"{where}: {problem}")
+
+    bucket = claimed.setdefault(pin.name, {})
+    if arch in bucket:
+        die(f"{pin.label}: two {arch} sources ({bucket[arch].where} and {where})")
+
+    only = field(source, "only-arches", where)
+    want = pin.arches[arch]
+    if only is None or [n.value for n in _sequence(only, f"{where}.only-arches")] != [want]:
+        got = "missing" if only is None else [n.value for n in only.value]
+        die(
+            f"{where} has a {arch} url but only-arches {got}, expected [{want}]. "
+            "A swapped pair builds one architecture's flatpak around the other's "
+            "binary, and nothing downstream would notice."
+        )
+
+    for key, template in pin.fixed.items():
+        node = field(source, key, where)
+        expected = template.format(arch=arch)
+        if node is None or node.value != expected:
+            die(f"{where} has {key}: {node.value if node else 'missing'}, expected {expected}")
+
+    values = {}
+    for key in pin.pinned:
+        node = field(source, key, where)
+        if node is None:
+            die(f"{where} has no {key}:")
+        if not isinstance(node, yaml.ScalarNode):
+            die(f"{where} has a non-scalar {key}:")
+        values[key] = node
+
+    bucket[arch] = Source(where=where, url=match.group(0), version=match.group("version"), values=values)
+
+
+def audit(root, where: str) -> dict:
+    """Check every source in the manifest; return the pinned ones, by arch.
+
+    Not "are the sources I found still correct" but "is what I found still all
+    there is". Every module is walked including nested ones, every source is
+    classified, and every source that fetches must be claimed by exactly one
+    Pin. Anything this cannot model is an error rather than a skip -- the
+    alternative is a source the build downloads that nothing here vouches for.
+    """
+    modules = field(root, "modules", where)
+    if modules is None:
+        die(f"{where} has no modules")
+
+    claimed: dict = {}
+    for source, spot in _walk_sources(modules, "modules"):
+        _classify(source, spot, claimed)
+
+    for pin in PINS:
+        found = claimed.get(pin.name, {})
+        missing = [a for a in pin.arches if a not in found]
+        if missing:
+            die(f"{where} has no {pin.label} source for {', '.join(missing)}")
+        # Checked here so it runs before any network work: resolving first and
+        # discovering the skew afterwards blamed the remote index for what is a
+        # local inconsistency.
+        versions = {found[a].version for a in pin.arches}
+        if len(versions) != 1:
+            die(
+                f"{pin.label} versions disagree: "
+                + ", ".join(f"{a}={found[a].version}" for a in pin.arches)
+            )
+    return claimed
+
+
+def rewrite(text: str, pin: Pin, found: dict, resolved: dict, where: str) -> str:
+    """Splice the resolved values in, then re-read the result and prove it.
+
+    The post-condition re-runs the whole audit over the rewritten bytes, so it
+    re-checks every invariant against the file as it now stands rather than only
+    the values, and without reference to how the edit was made.
+    """
+    updated = replace_scalars(
+        text,
+        [(found[arch].values[key], resolved[arch][key]) for arch in pin.arches for key in pin.pinned],
+    )
+    after = audit(compose(updated, where), where)[pin.name]
+    for arch in pin.arches:
+        if after[arch].url != found[arch].url:
+            die(f"after rewriting, the {arch} url changed to {after[arch].url}")
+        for key in pin.pinned:
+            written = after[arch].values[key].value
+            if written != resolved[arch][key]:
+                die(
+                    f"after rewriting, the {arch} {key} is {written}, "
+                    f"expected {resolved[arch][key]}"
+                )
+    return updated
 
 
 # What we are willing to splice into the manifest as a plain scalar. Deliberately

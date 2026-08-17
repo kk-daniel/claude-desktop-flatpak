@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import glob
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -31,14 +30,14 @@ from pathlib import Path
 
 # yaml comes via manifest_pins so the missing-PyYAML message lives in one place.
 from manifest_pins import (
+    CLAUDE,
+    CLAUDE_REPO,
+    audit,
+    compose,
     die,
-    field,
-    loaded_sources,
     read_manifest,
-    replace_scalars,
-    source_nodes,
+    rewrite,
     write_atomically,
-    yaml,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -46,24 +45,18 @@ MANIFEST = HERE / "ai.claude.Claude.yaml"
 KEY = HERE / "anthropic-apt-key.asc"
 
 PACKAGE = "claude-desktop"
-REPO_URI = "https://downloads.claude.ai/claude-desktop/apt/stable"
+# The repository and the URL shape live with the Pin, so the audit and the APT
+# root cannot drift apart about which tree this is.
+REPO_URI = CLAUDE_REPO
 SUITE = "stable"
 COMPONENT = "main"
-ARCHES = ("amd64", "arm64")
+ARCHES = tuple(CLAUDE.arches)
 
 # Vendored copy of https://downloads.claude.ai/claude-desktop/key.asc. APT trusts
 # whatever Signed-By points at, so pinning the fingerprint here is what turns
 # "APT accepted the repository" into "Anthropic signed it". It matches the
 # fingerprint documented at https://code.claude.com/docs/en/desktop-linux.
 FINGERPRINT = "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE"
-
-POOL_URL = re.compile(
-    re.escape(REPO_URI)
-    + r"/pool/[^\s]+/"
-    + re.escape(PACKAGE)
-    + r"_(?P<version>[0-9][^_/\s]*)_(?P<arch>amd64|arm64)\.deb\Z"
-)
-
 
 def run(argv, *, env=None):
     return subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
@@ -108,7 +101,7 @@ def pinned_keyring(work: Path) -> Path:
     return keyring
 
 
-def apt_environment(work: Path, keyring: Path) -> dict:
+def apt_environment(work: Path, keyring: Path) -> tuple[dict, Path]:
     """Build a throwaway APT root and return an env that points APT at it."""
     apt_get = shutil.which("apt-get")
     if apt_get is None:
@@ -152,7 +145,7 @@ def apt_environment(work: Path, keyring: Path) -> dict:
         "APT::Architectures { " + " ".join(f'"{a}";' for a in ARCHES) + " };\n"
         'Acquire::Retries "3";\n'
     )
-    return {**os.environ, "APT_CONFIG": str(config), "LC_ALL": "C"}
+    return {**os.environ, "APT_CONFIG": str(config), "LC_ALL": "C"}, root
 
 
 def apt_update(env: dict, root: Path) -> None:
@@ -169,53 +162,6 @@ def apt_update(env: dict, root: Path) -> None:
     for arch in ARCHES:
         if not glob.glob(str(root / f"var/lib/apt/lists/*_binary-{arch}_Packages")):
             die(f"APT produced no verified {arch} index")
-
-
-def manifest_sources(node) -> dict:
-    """Map arch -> the manifest's extra-data source node for that arch.
-
-    Structural, not textual: whatever the file's layout, these are exactly the
-    sources flatpak-builder will fetch.
-    """
-
-    extra_data = source_nodes(node, "extra-data")
-
-    # Any extra-data source beyond the two .debs would be fetched by the build
-    # but pinned by nothing here, so refuse rather than silently ignore it.
-    if len(extra_data) != len(ARCHES):
-        die(
-            f"expected {len(ARCHES)} extra-data sources in {MANIFEST.name}, "
-            f"found {len(extra_data)}"
-        )
-
-    by_arch = {}
-    for source in extra_data:
-        url_node = field(source, "url")
-        if url_node is None:
-            die(f"an extra-data source in {MANIFEST.name} has no url")
-        match = POOL_URL.fullmatch(url_node.value)
-        if match is None:
-            die(
-                f"extra-data source url is not a {REPO_URI} pool path for "
-                f"{PACKAGE}: {url_node.value}"
-            )
-        arch = match.group("arch")
-        if arch in by_arch:
-            die(f"{MANIFEST.name} has two {arch} extra-data sources")
-        for key in ("sha256", "size"):
-            if field(source, key) is None:
-                die(f"the {arch} extra-data source has no {key}")
-        by_arch[arch] = {
-            "url": url_node.value,
-            "version": match.group("version"),
-            "sha256": field(source, "sha256"),
-            "size": field(source, "size"),
-        }
-
-    missing = [a for a in ARCHES if a not in by_arch]
-    if missing:
-        die(f"{MANIFEST.name} has no extra-data source for {', '.join(missing)}")
-    return by_arch
 
 
 def resolve(arch: str, version: str, env: dict) -> tuple[str, str, str]:
@@ -255,82 +201,31 @@ def resolve(arch: str, version: str, env: dict) -> tuple[str, str, str]:
     return urllib.parse.unquote(url), size, digest[len("SHA256:") :]
 
 
-def check_written(text: str, resolved: dict) -> None:
-    """Re-parse the result and assert it says what we meant it to say.
-
-    This is the post-condition that matters. It does not care how the edit was
-    made -- it asks the parser flatpak-builder uses what the build will now
-    fetch, and requires that to be exactly the verified sources.
-    """
-    extra_data = loaded_sources(yaml.safe_load(text), "extra-data")
-    if len(extra_data) != len(ARCHES):
-        die(f"after rewriting, {MANIFEST.name} has {len(extra_data)} extra-data sources")
-
-    seen = {}
-    for source in extra_data:
-        match = POOL_URL.fullmatch(str(source.get("url", "")))
-        if match is None:
-            die(f"after rewriting, an extra-data url is not a {PACKAGE} pool path")
-        seen[match.group("arch")] = source
-
-    for arch in ARCHES:
-        source, want = seen.get(arch), resolved[arch]
-        if source is None:
-            die(f"after rewriting, {MANIFEST.name} has no {arch} extra-data source")
-        if source.get("url") != want["url"]:
-            die(f"after rewriting, the {arch} url is {source.get('url')}, expected {want['url']}")
-        if str(source.get("sha256")) != want["sha256"]:
-            die(f"after rewriting, the {arch} sha256 is {source.get('sha256')}, expected {want['sha256']}")
-        if str(source.get("size")) != want["size"]:
-            die(f"after rewriting, the {arch} size is {source.get('size')}, expected {want['size']}")
-
-
 def main() -> None:
+    text = read_manifest(MANIFEST)
+    # The whole manifest is audited before gpg or apt is touched. Resolving
+    # first and finding the skew afterwards blamed the signed index for what is
+    # a local inconsistency.
+    found = audit(compose(text, MANIFEST.name), MANIFEST.name)[CLAUDE.name]
+    version = found[ARCHES[0]].version
+
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        keyring = pinned_keyring(work)
-        env = apt_environment(work, keyring)
-        apt_update(env, work / "apt")
-
-        text = read_manifest(MANIFEST)
-        sources = manifest_sources(yaml.compose(text))
+        env, root = apt_environment(work, pinned_keyring(work))
+        apt_update(env, root)
 
         resolved = {}
         for arch in ARCHES:
-            url, size, sha256 = resolve(arch, sources[arch]["version"], env)
-            if url != sources[arch]["url"]:
+            url, size, sha256 = resolve(arch, version, env)
+            if url != found[arch].url:
                 die(
-                    f"signed index resolves {PACKAGE}:{arch}="
-                    f"{sources[arch]['version']} to {url}, manifest points at "
-                    f"{sources[arch]['url']}"
+                    f"signed index resolves {PACKAGE}:{arch}={version} to {url}, "
+                    f"manifest points at {found[arch].url}"
                 )
-            resolved[arch] = {"url": url, "sha256": sha256, "size": size}
+            resolved[arch] = {"sha256": sha256, "size": size}
 
-        # Renovate resolves each arch against its own index, so the two can drift
-        # apart. Nothing downstream would catch it: CI builds, installs and
-        # smoke-tests x86_64 only, so a skew would ship an older Claude to
-        # aarch64 users unnoticed.
-        versions = {sources[arch]["version"] for arch in ARCHES}
-        if len(versions) != 1:
-            die(
-                "manifest arch versions disagree: "
-                + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
-            )
+    write_atomically(MANIFEST, rewrite(text, CLAUDE, found, resolved, MANIFEST.name))
 
-        # Editing by node mark keeps every comment and every byte not being
-        # pinned, while still targeting the exact scalars the parser identified.
-        updated = replace_scalars(
-            text,
-            [
-                (sources[arch][key], resolved[arch][key])
-                for arch in ARCHES
-                for key in ("sha256", "size")
-            ],
-        )
-        check_written(updated, resolved)
-        write_atomically(MANIFEST, updated)
-
-    version = versions.pop()
     print(f"Verified {PACKAGE} {version} against the signed index")
     for arch in ARCHES:
         print(f"  {arch} sha256={resolved[arch]['sha256']} size={resolved[arch]['size']}")
