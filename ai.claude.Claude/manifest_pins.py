@@ -11,8 +11,10 @@ comments and formatting survive untouched.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -163,22 +165,46 @@ def replace_scalars(text: str, edits) -> str:
     return text
 
 
+def read_manifest(path: Path) -> str:
+    """Read the manifest as UTF-8, with its line endings left alone.
+
+    Path.read_text() would do neither. It opens in universal-newline mode, so a
+    CRLF checkout is silently rewritten to LF -- a whole-file diff that
+    verify-pins then reports as "pins do not match the signed index", with no
+    pin having changed. And it decodes with the locale encoding, so the em
+    dashes in this manifest's comments crash the run under a legacy non-UTF-8
+    locale. YAML is defined to be UTF-8 and flatpak-builder reads it as UTF-8,
+    so there is nothing here to negotiate with the environment.
+    """
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        die(f"{path.name} is not valid UTF-8: {exc}")
+
+
 def write_atomically(path: Path, text: str) -> None:
-    """Replace `path` with `text`, keeping its mode.
+    """Replace the file `path` names with `text`, keeping its mode.
+
+    Resolved first: without that, a symlinked manifest -- a worktree, a
+    packaging overlay -- is *replaced by* the rewrite rather than written
+    through, so the file that was meant to change still holds the old pins and
+    the next run reads the new regular file and reports success.
 
     The temp file is created alongside the target so the rename stays on one
     filesystem, and so mode and SELinux label come from the repository rather
     than from $TMPDIR.
     """
-    mode = path.stat().st_mode
-    handle = tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, prefix=path.name + ".", delete=False
-    )
+    target = path.resolve()
+    handle, temporary = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".")
     try:
-        handle.write(text)
-        handle.close()
-        os.chmod(handle.name, mode)
-        os.replace(handle.name, path)
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(text.encode("utf-8"))
+        shutil.copymode(target, temporary)
+        os.replace(temporary, target)
     except BaseException:
-        os.unlink(handle.name)
+        # Suppressed: an unlink that itself raises would replace the exception
+        # actually propagating with a FileNotFoundError naming a temp file that
+        # no longer exists -- the one traceback that explains nothing.
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
         raise

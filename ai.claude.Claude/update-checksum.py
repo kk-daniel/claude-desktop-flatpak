@@ -34,6 +34,7 @@ from manifest_pins import (
     die,
     field,
     loaded_sources,
+    read_manifest,
     replace_scalars,
     source_nodes,
     write_atomically,
@@ -291,7 +292,7 @@ def main() -> None:
         env = apt_environment(work, keyring)
         apt_update(env, work / "apt")
 
-        text = MANIFEST.read_text()
+        text = read_manifest(MANIFEST)
         sources = manifest_sources(yaml.compose(text))
 
         resolved = {}

@@ -25,6 +25,7 @@ from manifest_pins import (
     die,
     field,
     loaded_sources,
+    read_manifest,
     replace_scalars,
     source_nodes,
     write_atomically,
@@ -119,7 +120,7 @@ def check_written(text: str, resolved: dict) -> None:
 
 
 def main() -> None:
-    text = MANIFEST.read_text()
+    text = read_manifest(MANIFEST)
     sources = archive_sources(yaml.compose(text))
 
     versions = {sources[arch]["version"] for arch in ARCHES}
