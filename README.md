@@ -51,6 +51,31 @@ flatpak override --user --talk-name=org.freedesktop.secrets ai.claude.Claude
 
 Undo it with `--no-talk-name=org.freedesktop.secrets`.
 
+## Config location
+
+Only `~/.claude` is persisted (`--persist=.claude` in the manifest), so it is
+mapped to `~/.var/app/ai.claude.Claude/.claude/` on the host and anything
+written elsewhere in `$HOME` is discarded when the sandbox restarts. The
+launcher therefore exports `CLAUDE_CONFIG_DIR="$HOME/.claude"`, which moves the
+global config from `$HOME/.claude.json` to `$HOME/.claude/.claude.json` — inside
+the persisted directory. Earlier builds symlinked `$HOME/.claude.json` to
+`.claude/claude.json` instead; the launcher renames that file and removes the
+link on first start.
+
+The export lives in `claude.sh`, so anything that bypasses the launcher — say
+`flatpak run --command=claude ai.claude.Claude` — falls back to
+`$HOME/.claude.json` and will not see the app's config. Set the variable for
+the whole sandbox to cover those too:
+
+```sh
+flatpak override --user --env=CLAUDE_CONFIG_DIR="$HOME/.claude" ai.claude.Claude
+```
+
+`flatpak override` does not expand variables, so `$HOME` above is expanded by
+your shell and stored as an absolute path. That is fine because the sandbox
+keeps the host's home path, but the override has to be redone if that path ever
+changes. Undo it with `--unset-env=CLAUDE_CONFIG_DIR`.
+
 ## Updating Claude
 
 Run:

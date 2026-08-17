@@ -27,21 +27,30 @@ cleanup_stale_lock() {
   fi
 }
 
-# Claude's CLI/MCP code writes config to ~/.claude.json. Only ~/.claude is
-# persisted (--persist=.claude), so a real file at $HOME/.claude.json would
-# be lost across sandbox restarts. Redirect via a relative symlink into the
-# persisted dir; create an empty JSON if no config has been written yet.
-ensure_claude_json_link() {
+# Claude's CLI/MCP code writes config to $CLAUDE_CONFIG_DIR/.claude.json when
+# that variable is set, and to $HOME/.claude.json otherwise. Only ~/.claude is
+# persisted (--persist=.claude), so a real file at $HOME/.claude.json would be
+# lost across sandbox restarts. Pointing CLAUDE_CONFIG_DIR at the persisted dir
+# keeps the config there without leaving anything at the home level; the app
+# names this the supported relocation and refuses symlinks below the config
+# root. Earlier builds redirected $HOME/.claude.json to .claude/claude.json
+# instead, so fold that file into its new name and drop the stale link.
+migrate_claude_config() {
+  local dir="$HOME/.claude"
+  local config="$dir/.claude.json"
+  local legacy="$dir/claude.json"
   local link="$HOME/.claude.json"
-  local rel_target=".claude/claude.json"
-  local abs_target="$HOME/$rel_target"
 
-  mkdir -p "$HOME/.claude"
-  [ -e "$abs_target" ] || printf '{}\n' > "$abs_target"
+  mkdir -p "$dir"
 
-  if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$rel_target" ]; then
-    ln -sfn "$rel_target" "$link"
-    log "Linked $link -> $rel_target"
+  if [ ! -e "$config" ] && [ -f "$legacy" ]; then
+    mv "$legacy" "$config"
+    log "Migrated $legacy -> $config"
+  fi
+
+  if [ -L "$link" ]; then
+    rm -f "$link"
+    log "Removed legacy $link symlink"
   fi
 }
 
@@ -58,8 +67,9 @@ if [ -n "${XRDP_SESSION:-}" ]; then
 fi
 
 cleanup_stale_lock
-ensure_claude_json_link
+migrate_claude_config
 
+export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export ELECTRON_FORCE_IS_PACKAGED=true
 export CHROME_DESKTOP=ai.claude.Claude.desktop
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
