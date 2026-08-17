@@ -12,15 +12,17 @@ Two things APT cannot know are asserted here: that the vendored key file holds
 exactly the pinned fingerprint (APT trusts any key placed in the Signed-By
 file), and that both architectures name the same version.
 
-The manifest is read and validated with PyYAML -- the same libyaml that
-flatpak-builder itself uses -- so that what this script verifies and what the
-build fetches cannot disagree. Earlier line-oriented versions of this check kept
-losing to legal YAML the scanner did not model.
+The manifest is read and validated with PyYAML rather than scanned line by line,
+because earlier line-oriented versions of this check kept losing to legal YAML
+the scanner did not model. Note what that does and does not claim: PyYAML is not
+the parser flatpak-builder links against, and yaml.compose() below uses the
+pure-Python loader even where libyaml is installed. The guarantee is "a real
+YAML parser, and the rewrite re-read through one before it lands" -- see
+check_written -- not "byte-for-byte the same implementation as the builder".
 """
 
 from __future__ import annotations
 
-import glob
 import os
 import re
 import shutil
@@ -36,10 +38,10 @@ try:
 except ModuleNotFoundError:
     sys.exit(
         f"Error: PyYAML is required but is not available to {sys.executable}.\n"
-        "The manifest is parsed with the same libyaml flatpak-builder uses, so a\n"
-        "structural check is possible at all. Install it (dnf install\n"
-        "python3-pyyaml / apt install python3-yaml), or run this script with an\n"
-        "interpreter that has it."
+        "The manifest is parsed as YAML rather than scanned, so a structural\n"
+        "check is possible at all. Install it (dnf install python3-pyyaml /\n"
+        "apt install python3-yaml), or run this script with an interpreter that\n"
+        "has it."
     )
 
 HERE = Path(__file__).resolve().parent
@@ -47,10 +49,20 @@ MANIFEST = HERE / "ai.claude.Claude.yaml"
 KEY = HERE / "anthropic-apt-key.asc"
 
 PACKAGE = "claude-desktop"
+# The manifest module these pins live in, and how --print-version labels them.
+# The module is looked up by name: the two .debs are at a known place in a known
+# file, so there is no reason to go hunting for them.
+MODULE = "claude"
 REPO_URI = "https://downloads.claude.ai/claude-desktop/apt/stable"
 SUITE = "stable"
 COMPONENT = "main"
-ARCHES = ("amd64", "arm64")
+# The arch as it appears in the .deb url, mapped to the value only-arches must
+# carry for that source. Checking the pair is what catches a manifest that
+# builds one architecture's flatpak around the other's binary.
+ARCHES = {"amd64": "x86_64", "arm64": "aarch64"}
+# apply_extra looks for exactly these two names, so the manifest's filename: is
+# load-bearing at install time.
+FILENAME = "claude-desktop-{arch}.deb"
 
 # Vendored copy of https://downloads.claude.ai/claude-desktop/key.asc. APT trusts
 # whatever Signed-By points at, so pinning the fingerprint here is what turns
@@ -148,14 +160,21 @@ def apt_environment(work: Path, keyring: Path) -> dict:
     config.write_text(
         f'Dir "{root}";\n'
         'Dir::State "var/lib/apt";\n'
+        # Not APT's default everywhere: the built-in default for this has been
+        # an absolute path in some versions, and Dir does not re-root absolute
+        # values. Dropping it would let a non-Debian host's real dpkg status be
+        # read, which is exactly what this throwaway root exists to avoid.
         f'Dir::State::status "{root}/var/lib/dpkg/status";\n'
         'Dir::Cache "var/cache/apt";\n'
         'Dir::Etc "etc/apt";\n'
         f'Dir::Bin::methods "{methods}";\n'
-        'Dir::Bin::dpkg "/bin/false";\n'
-        f'APT::Architecture "{ARCHES[0]}";\n'
+        f'APT::Architecture "{next(iter(ARCHES))}";\n'
         "APT::Architectures { " + " ".join(f'"{a}";' for a in ARCHES) + " };\n"
         'Acquire::Retries "3";\n'
+        # Without these a stalled mirror blocks until the job's own limit, which
+        # on Actions is six hours.
+        'Acquire::http::Timeout "30";\n'
+        'Acquire::https::Timeout "30";\n'
     )
     return {**os.environ, "APT_CONFIG": str(config), "LC_ALL": "C"}
 
@@ -171,58 +190,92 @@ def apt_update(env: dict, root: Path) -> None:
 
     # APT writes no index when verification fails, so their presence is a second
     # confirmation rather than a restatement of the exit status.
+    lists = root / "var/lib/apt/lists"
     for arch in ARCHES:
-        if not glob.glob(str(root / f"var/lib/apt/lists/*_binary-{arch}_Packages")):
+        # Path.glob, not glob.glob: the latter treats its whole argument as a
+        # pattern, and the argument here is built from $TMPDIR, so a temp
+        # directory containing [ or * made this report a missing index that APT
+        # had in fact produced.
+        if not any(lists.glob(f"*_binary-{arch}_Packages")):
             die(f"APT produced no verified {arch} index")
 
 
+def field(mapping, key):
+    for k, v in mapping.value:
+        if getattr(k, "value", None) == key:
+            return v
+    return None
+
+
 def manifest_sources(node) -> dict:
-    """Map arch -> the manifest's extra-data source node for that arch.
+    """Map url-arch -> the manifest's extra-data source for that arch.
 
-    Structural, not textual: whatever the file's layout, these are exactly the
-    sources flatpak-builder will fetch.
+    The module is found by name and only its own sources are read. Scanning the
+    whole document for every `type: extra-data` would be both wider and weaker:
+    wider because a source elsewhere is not this script's to pin, and weaker
+    because a single-level walk does not see one nested inside another module
+    anyway. What a source is pinned to belongs to whoever put it there.
+
+    Within this module, though, an extra-data source that is not one of the two
+    .debs would be fetched by the build and hashed by nothing here, so it is
+    refused rather than ignored.
     """
+    modules = field(node, "modules")
+    if modules is None:
+        die(f"{MANIFEST.name} has no modules")
 
-    def field(mapping, key):
-        for k, v in mapping.value:
-            if getattr(k, "value", None) == key:
-                return v
-        return None
+    found = [m for m in modules.value if getattr(field(m, "name"), "value", None) == MODULE]
+    if len(found) != 1:
+        die(f"{MANIFEST.name} has {len(found)} modules named {MODULE}, expected 1")
 
-    extra_data = []
-    for module in field(node, "modules").value:
-        sources = field(module, "sources")
-        if sources is None:
-            continue
-        for source in sources.value:
-            if getattr(field(source, "type"), "value", None) == "extra-data":
-                extra_data.append(source)
-
-    # Any extra-data source beyond the two .debs would be fetched by the build
-    # but pinned by nothing here, so refuse rather than silently ignore it.
-    if len(extra_data) != len(ARCHES):
-        die(
-            f"expected {len(ARCHES)} extra-data sources in {MANIFEST.name}, "
-            f"found {len(extra_data)}"
-        )
+    sources = field(found[0], "sources")
+    if sources is None:
+        die(f"the {MODULE} module has no sources")
 
     by_arch = {}
-    for source in extra_data:
+    for source in sources.value:
+        # The module also carries local `type: file` sources, which fetch
+        # nothing and are not ours to check.
+        if getattr(field(source, "type"), "value", None) != "extra-data":
+            continue
+
         url_node = field(source, "url")
         if url_node is None:
-            die(f"an extra-data source in {MANIFEST.name} has no url")
+            die(f"an extra-data source in the {MODULE} module has no url")
         match = POOL_URL.fullmatch(url_node.value)
         if match is None:
             die(
-                f"extra-data source url is not a {REPO_URI} pool path for "
-                f"{PACKAGE}: {url_node.value}"
+                f"the {MODULE} module fetches {url_node.value}, which is not a "
+                f"{REPO_URI} pool path for {PACKAGE}"
             )
+
         arch = match.group("arch")
         if arch in by_arch:
             die(f"{MANIFEST.name} has two {arch} extra-data sources")
+
+        only = field(source, "only-arches")
+        listed = [getattr(n, "value", n) for n in only.value] if only is not None else None
+        want = ARCHES[arch]
+        if listed != [want]:
+            die(
+                f"the {arch} .deb has only-arches {listed or 'missing'}, expected "
+                f"[{want}]. A swapped pair builds one architecture's flatpak "
+                "around the other's binary, and nothing downstream would notice."
+            )
+
+        filename = field(source, "filename")
+        expected = FILENAME.format(arch=arch)
+        if filename is None or filename.value != expected:
+            die(
+                f"the {arch} .deb has filename "
+                f"{filename.value if filename is not None else 'missing'}, expected "
+                f"{expected}. apply_extra looks the payload up by that name."
+            )
+
         for key in ("sha256", "size"):
             if field(source, key) is None:
                 die(f"the {arch} extra-data source has no {key}")
+
         by_arch[arch] = {
             "url": url_node.value,
             "version": match.group("version"),
@@ -232,7 +285,7 @@ def manifest_sources(node) -> dict:
 
     missing = [a for a in ARCHES if a not in by_arch]
     if missing:
-        die(f"{MANIFEST.name} has no extra-data source for {', '.join(missing)}")
+        die(f"the {MODULE} module has no extra-data source for {', '.join(missing)}")
     return by_arch
 
 
@@ -273,27 +326,57 @@ def resolve(arch: str, version: str, env: dict) -> tuple[str, str, str]:
     return urllib.parse.unquote(url), size, digest[len("SHA256:") :]
 
 
-def write_manifest(text: str, sources: dict, resolved: dict) -> str:
-    """Replace each sha256/size scalar in place, by node mark.
+def value_span(text: str, node) -> tuple[int, int]:
+    """The span of a scalar's own value, excluding any &anchor or !!tag.
 
-    Editing by mark keeps every comment and every byte we are not pinning, while
-    still targeting the exact scalars the parser identified.
+    A ScalarNode's start_mark points at its properties, not its value, so
+    replacing the whole extent of `sha256: &pin !!str abc` deletes `&pin !!str`
+    -- silently when nothing references the anchor, and leaving a dangling alias
+    when something does. Properties are whitespace-delimited tokens starting
+    with ! or &, and a value cannot start with either, so skipping them is
+    unambiguous.
     """
-    lines = text.split("\n")
+    start, end = node.start_mark.index, node.end_mark.index
+    while start < end and text[start] in "!&":
+        while start < end and not text[start].isspace():
+            start += 1
+        while start < end and text[start].isspace():
+            start += 1
+    return start, end
+
+
+def write_manifest(text: str, sources: dict, resolved: dict) -> str:
+    """Replace each sha256/size value in place, by node mark.
+
+    Editing by mark keeps every comment and every byte we are not pinning. Only
+    the value is replaced, and it is re-emitted in the style it already had:
+    dropping the quotes off a quoted scalar still parses, so nothing downstream
+    notices, but it is a whole-line diff that verify-pins reports as "pins do
+    not match the signed index" -- which would be false.
+
+    Offsets are absolute, not (line, column): PyYAML counts NEL, LS and PS as
+    line breaks where str.split("\\n") does not, so line bookkeeping can land a
+    rewrite on the wrong line of a file containing any of them.
+    """
     edits = []
     for arch in ARCHES:
-        for key, value in (
-            ("sha256", resolved[arch]["sha256"]),
-            ("size", resolved[arch]["size"]),
-        ):
+        for key in ("sha256", "size"):
             node = sources[arch][key]
-            edits.append((node.start_mark.line, node.start_mark.column, node.end_mark.column, value))
+            # The C loader reports a plain scalar's style as '' where the Python
+            # one gives None; normalise so this does not depend on which is used.
+            style = node.style or None
+            value = resolved[arch][key]
+            if style in ("'", '"'):
+                value = f"{style}{value}{style}"
+            elif style is not None:
+                die(f"cannot rewrite a block scalar (style {style!r}) for {arch} {key}")
+            edits.append((node, value))
 
-    # One edit per line, so applying them independently is safe.
-    for line_no, start, end, value in edits:
-        line = lines[line_no]
-        lines[line_no] = line[:start] + value + line[end:]
-    return "\n".join(lines)
+    # Descending, so replacing one value cannot shift the offsets of the next.
+    for node, value in sorted(edits, key=lambda e: e[0].start_mark.index, reverse=True):
+        start, end = value_span(text, node)
+        text = text[:start] + value + text[end:]
+    return text
 
 
 def check_written(text: str, resolved: dict) -> None:
@@ -304,21 +387,23 @@ def check_written(text: str, resolved: dict) -> None:
     fetch, and requires that to be exactly the verified sources.
     """
     document = yaml.safe_load(text)
-    extra_data = [
-        source
-        for module in document.get("modules", [])
-        if isinstance(module, dict)
-        for source in module.get("sources", []) or []
-        if isinstance(source, dict) and source.get("type") == "extra-data"
+    modules = [
+        m
+        for m in document.get("modules", [])
+        if isinstance(m, dict) and m.get("name") == MODULE
     ]
-    if len(extra_data) != len(ARCHES):
-        die(f"after rewriting, {MANIFEST.name} has {len(extra_data)} extra-data sources")
+    if len(modules) != 1:
+        die(f"after rewriting, {MANIFEST.name} has {len(modules)} modules named {MODULE}")
 
     seen = {}
-    for source in extra_data:
+    for source in modules[0].get("sources", []) or []:
+        if not isinstance(source, dict):
+            die(f"after rewriting, the {MODULE} module has a source that is not a mapping")
+        if source.get("type") != "extra-data":
+            continue
         match = POOL_URL.fullmatch(str(source.get("url", "")))
         if match is None:
-            die(f"after rewriting, an extra-data url is not a {PACKAGE} pool path")
+            die(f"after rewriting, the {MODULE} module fetches {source.get('url')}")
         seen[match.group("arch")] = source
 
     for arch in ARCHES:
@@ -334,14 +419,36 @@ def check_written(text: str, resolved: dict) -> None:
 
 
 def main() -> None:
+    # Read and validate the manifest before gpg or apt is touched. A manifest
+    # this script cannot make sense of is a local problem, and spending a
+    # repository fetch to discover it reports the remote as the culprit.
+    text = MANIFEST.read_text(encoding="utf-8")
+    sources = manifest_sources(yaml.compose(text))
+
+    # Renovate resolves each arch against its own index, so the two can drift
+    # apart. Nothing downstream would catch it: CI builds, installs and
+    # smoke-tests x86_64 only, so a skew would ship an older Claude to aarch64
+    # users unnoticed.
+    versions = {sources[arch]["version"] for arch in ARCHES}
+    if len(versions) != 1:
+        die(
+            "manifest arch versions disagree: "
+            + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
+        )
+
+    if sys.argv[1:]:
+        # The CI version check runs this instead of grepping the manifest, so it
+        # reads the pins through the same structural code the update path uses.
+        if sys.argv[1:] != ["--print-version"]:
+            die(f"usage: {Path(sys.argv[0]).name} [--print-version]")
+        print(f"{MODULE}={versions.pop()}")
+        return
+
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         keyring = pinned_keyring(work)
         env = apt_environment(work, keyring)
         apt_update(env, work / "apt")
-
-        text = MANIFEST.read_text()
-        sources = manifest_sources(yaml.compose(text))
 
         resolved = {}
         for arch in ARCHES:
@@ -354,17 +461,6 @@ def main() -> None:
                 )
             resolved[arch] = {"url": url, "sha256": sha256, "size": size}
 
-        # Renovate resolves each arch against its own index, so the two can drift
-        # apart. Nothing downstream would catch it: CI builds, installs and
-        # smoke-tests x86_64 only, so a skew would ship an older Claude to
-        # aarch64 users unnoticed.
-        versions = {sources[arch]["version"] for arch in ARCHES}
-        if len(versions) != 1:
-            die(
-                "manifest arch versions disagree: "
-                + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
-            )
-
         updated = write_manifest(text, sources, resolved)
         check_written(updated, resolved)
 
@@ -372,7 +468,7 @@ def main() -> None:
         # carry the manifest's own mode rather than the temp file's 0600.
         mode = MANIFEST.stat().st_mode
         handle = tempfile.NamedTemporaryFile(
-            "w", dir=MANIFEST.parent, prefix=MANIFEST.name + ".", delete=False
+            "w", dir=MANIFEST.parent, prefix=MANIFEST.name + ".", delete=False, encoding="utf-8"
         )
         try:
             handle.write(updated)
