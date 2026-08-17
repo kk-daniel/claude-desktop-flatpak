@@ -3,6 +3,10 @@
 # aaddrick/claude-desktop-debian/scripts/launcher-common.sh. MIT licensed
 # — see LICENSE.
 set -euo pipefail
+# The extension scans below iterate over mount points that are empty unless the
+# user installed something; without nullglob the loops would run once on a
+# literal "*". No other glob in this script relies on the default behaviour.
+shopt -s nullglob
 
 log_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-flatpak"
 mkdir -p "$log_dir"
@@ -54,6 +58,62 @@ migrate_claude_config() {
   fi
 }
 
+# Tool extensions land at /app/tools/<name> via the com.visualstudio.code.tool
+# extension point declared in the manifest, so the Flathub extensions built for
+# VS Code work here unmodified:
+#   flatpak install flathub com.visualstudio.code.tool.podman//25.08
+# Nothing gates this — as in VS Code's launcher, whatever is mounted is wired up.
+enable_tool_extensions() {
+  local tool_dir tool_bindir
+  for tool_dir in /app/tools/*; do
+    tool_bindir="$tool_dir/bin"
+    [ -d "$tool_bindir" ] || continue
+    export PATH="$PATH:$tool_bindir"
+    log "Added $tool_bindir to PATH"
+  done
+}
+
+# Opt-in SDK extensions, same contract as the VS Code Flatpak. Nothing is
+# declared in the manifest for these: we run on org.freedesktop.Sdk, whose own
+# extension point already mounts any installed org.freedesktop.Sdk.Extension.*
+# at /usr/lib/sdk/<name>. FLATPAK_ENABLE_SDK_EXT takes a comma-separated list of
+# short names, or "*" for everything installed:
+#   flatpak install flathub org.freedesktop.Sdk.Extension.golang//25.08
+#   flatpak run --env=FLATPAK_ENABLE_SDK_EXT=golang ai.claude.Claude
+enable_sdk_extensions() {
+  local spec="${FLATPAK_ENABLE_SDK_EXT:-}"
+  local sdk=() dir ext
+  [ -n "$spec" ] || return 0
+
+  if [ "$spec" = "*" ]; then
+    for dir in /usr/lib/sdk/*; do
+      sdk+=("${dir##*/}")
+    done
+  else
+    IFS=',' read -ra sdk <<< "$spec"
+  fi
+
+  for ext in "${sdk[@]}"; do
+    [ -n "$ext" ] || continue
+    if [ ! -d "/usr/lib/sdk/$ext" ]; then
+      log "Requested SDK extension \"$ext\" is not installed"
+      continue
+    fi
+    log "Enabling SDK extension \"$ext\""
+    if [ -f "/usr/lib/sdk/$ext/enable.sh" ]; then
+      # Third-party script we don't control: drop errexit/nounset so a stray
+      # unset variable or failing command in it can't take the launcher down.
+      # VS Code's launcher sources these under plain `set -e`, without -u.
+      set +eu
+      # shellcheck source=/dev/null
+      . "/usr/lib/sdk/$ext/enable.sh"
+      set -eu
+    else
+      export PATH="$PATH:/usr/lib/sdk/$ext/bin"
+    fi
+  done
+}
+
 # No titlebar flags: the official Linux build gates titleBarOverlay itself, so
 # forcing CustomTitlebar/WindowControlsOverlay here would fight its own logic.
 electron_args=()
@@ -68,11 +128,12 @@ fi
 
 cleanup_stale_lock
 migrate_claude_config
+enable_tool_extensions
+enable_sdk_extensions
 
 export CLAUDE_CONFIG_DIR="$HOME/.claude"
 export ELECTRON_FORCE_IS_PACKAGED=true
 export CHROME_DESKTOP=ai.claude.Claude.desktop
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-wayland}"
-export PATH="/app/tools/podman/bin:$PATH"
 
 exec /app/bin/zypak-wrapper.sh /app/extra/claude/claude-desktop "${electron_args[@]}" "$@"
