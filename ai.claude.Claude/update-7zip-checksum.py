@@ -219,6 +219,14 @@ def main() -> None:
             + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
         )
 
+    if sys.argv[1:]:
+        # The CI version check runs this instead of grepping the manifest, so it
+        # reads the pin through the same structural code the update path uses.
+        if sys.argv[1:] != ["--print-version"]:
+            die(f"usage: {Path(sys.argv[0]).name} [--print-version]")
+        print(f"{MODULE}={versions.pop()}")
+        return
+
     with tempfile.TemporaryDirectory() as tmp:
         resolved = {}
         for arch in ARCHES:

@@ -46,6 +46,9 @@ MANIFEST = HERE / "ai.claude.Claude.yaml"
 KEY = HERE / "anthropic-apt-key.asc"
 
 PACKAGE = "claude-desktop"
+# How --print-version labels this pin. Matches the manifest module's name, which
+# is what the CI version check compares before and after an update.
+LABEL = "claude"
 REPO_URI = "https://downloads.claude.ai/claude-desktop/apt/stable"
 SUITE = "stable"
 COMPONENT = "main"
@@ -345,14 +348,36 @@ def check_written(text: str, resolved: dict) -> None:
 
 
 def main() -> None:
+    # Read and validate the manifest before gpg or apt is touched. A manifest
+    # this script cannot make sense of is a local problem, and spending a
+    # repository fetch to discover it reports the remote as the culprit.
+    text = MANIFEST.read_text()
+    sources = manifest_sources(yaml.compose(text))
+
+    # Renovate resolves each arch against its own index, so the two can drift
+    # apart. Nothing downstream would catch it: CI builds, installs and
+    # smoke-tests x86_64 only, so a skew would ship an older Claude to aarch64
+    # users unnoticed.
+    versions = {sources[arch]["version"] for arch in ARCHES}
+    if len(versions) != 1:
+        die(
+            "manifest arch versions disagree: "
+            + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
+        )
+
+    if sys.argv[1:]:
+        # The CI version check runs this instead of grepping the manifest, so it
+        # reads the pins through the same structural code the update path uses.
+        if sys.argv[1:] != ["--print-version"]:
+            die(f"usage: {Path(sys.argv[0]).name} [--print-version]")
+        print(f"{LABEL}={versions.pop()}")
+        return
+
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         keyring = pinned_keyring(work)
         env = apt_environment(work, keyring)
         apt_update(env, work / "apt")
-
-        text = MANIFEST.read_text()
-        sources = manifest_sources(yaml.compose(text))
 
         resolved = {}
         for arch in ARCHES:
@@ -364,17 +389,6 @@ def main() -> None:
                     f"{sources[arch]['url']}"
                 )
             resolved[arch] = {"url": url, "sha256": sha256, "size": size}
-
-        # Renovate resolves each arch against its own index, so the two can drift
-        # apart. Nothing downstream would catch it: CI builds, installs and
-        # smoke-tests x86_64 only, so a skew would ship an older Claude to
-        # aarch64 users unnoticed.
-        versions = {sources[arch]["version"] for arch in ARCHES}
-        if len(versions) != 1:
-            die(
-                "manifest arch versions disagree: "
-                + ", ".join(f"{a}={sources[a]['version']}" for a in ARCHES)
-            )
 
         updated = write_manifest(text, sources, resolved)
         check_written(updated, resolved)

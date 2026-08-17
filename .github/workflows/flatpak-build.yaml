@@ -43,8 +43,8 @@ jobs:
           set -eo pipefail
           versions="$(
             {
-              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
-              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
+              ./${APP_ID}/update-checksum.py --print-version
+              ./${APP_ID}/update-7zip-checksum.py --print-version
             } | sort
           )"
           {
@@ -69,8 +69,8 @@ jobs:
           set -eo pipefail
           after="$(
             {
-              grep -m 1 "url: https://downloads\.claude\.ai/claude-desktop/apt/" ${APP_ID}/${APP_ID}.yaml | sed -n 's#.*/claude-desktop_\([0-9][0-9.]*\)_[a-z0-9]*\.deb.*#claude=\1#p'
-              grep -m 1 "url: https://github\.com/ip7z/7zip/releases/download/" ${APP_ID}/${APP_ID}.yaml | awk -F/ '{print "7zip=" $8}'
+              ./${APP_ID}/update-checksum.py --print-version
+              ./${APP_ID}/update-7zip-checksum.py --print-version
             } | sort
           )"
           if [ "$after" != "$BEFORE" ]; then
