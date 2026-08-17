@@ -61,7 +61,7 @@ jobs:
         run: ./${APP_ID}/update-metainfo.sh
       - name: Update 7-Zip checksums
         if: endsWith(github.head_ref, '7zip')
-        run: ./${APP_ID}/update-7zip-checksum.sh
+        run: ./${APP_ID}/update-7zip-checksum.py
       - name: Verify dependency versions unchanged
         env:
           BEFORE: ${{ steps.dependency-versions-before.outputs.versions }}
