@@ -64,12 +64,31 @@ migrate_claude_config() {
 #   flatpak install flathub com.visualstudio.code.tool.podman//25.08
 # Nothing gates this — as in VS Code's launcher, whatever is mounted is wired up.
 enable_tool_extensions() {
-  local tool_dir tool_bindir
+  local python_sitedir tool_dir tool_bindir tool_pythondir
+  python_sitedir="$(python3 - <<'PYTHON'
+import os
+import site
+
+print(os.path.relpath(site.getusersitepackages(), site.getuserbase()))
+PYTHON
+)"
+
   for tool_dir in /app/tools/*; do
     tool_bindir="$tool_dir/bin"
-    [ -d "$tool_bindir" ] || continue
-    export PATH="$PATH:$tool_bindir"
-    log "Added $tool_bindir to PATH"
+    if [ -d "$tool_bindir" ]; then
+      export PATH="$PATH:$tool_bindir"
+      log "Added $tool_bindir to PATH"
+    fi
+
+    tool_pythondir="$tool_dir/$python_sitedir"
+    if [ -d "$tool_pythondir" ]; then
+      if [ -z "${PYTHONPATH:-}" ]; then
+        export PYTHONPATH="$tool_pythondir"
+      else
+        export PYTHONPATH="$PYTHONPATH:$tool_pythondir"
+      fi
+      log "Added $tool_pythondir to PYTHONPATH"
+    fi
   done
 }
 
