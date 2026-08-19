@@ -91,8 +91,10 @@ install here unmodified — note the `//25.08` branch, which has to match:
 flatpak install flathub com.visualstudio.code.tool.podman//25.08
 ```
 
-Each one mounts at `/app/tools/<name>`, and its `bin/` is appended to `PATH` at
-launch. `com.visualstudio.code.tool.fish` and `.tool.git-lfs` work the same way.
+Each one mounts at `/app/tools/<name>`. At launch, its `bin/` is appended to
+`PATH`, and a Python user site-packages directory matching the runtime is
+appended to `PYTHONPATH` when present. `com.visualstudio.code.tool.fish` and
+`.tool.git-lfs` work the same way.
 
 **SDK extensions** are opt-in, gated by `FLATPAK_ENABLE_SDK_EXT`. Because the app
 runs on `org.freedesktop.Sdk`, any installed `org.freedesktop.Sdk.Extension.*` is
