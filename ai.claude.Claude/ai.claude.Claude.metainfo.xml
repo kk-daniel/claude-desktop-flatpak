@@ -20,6 +20,7 @@
   </categories>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="2.2553.13" date="2026-09-22"/>
     <release version="2.2553.1" date="2026-09-18"/>
     <release version="2.2553.0" date="2026-09-18"/>
     <release version="2.110.1" date="2026-09-17"/>
