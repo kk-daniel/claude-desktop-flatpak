@@ -1,9 +1,9 @@
 app-id: ai.claude.Claude
 runtime: org.freedesktop.Sdk
-runtime-version: "25.08"
+runtime-version: "26.08"
 sdk: org.freedesktop.Sdk
 base: org.electronjs.Electron2.BaseApp
-base-version: "25.08"
+base-version: "26.08"
 command: claude-desktop
 tags: [proprietary]
 separate-locales: false
