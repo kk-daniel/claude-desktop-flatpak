@@ -281,7 +281,7 @@ jobs:
             chrome_crashpad_handler \
             resources/app.asar \
             resources/app.asar.unpacked/node_modules/@ant/claude-native/claude-native-binding.node \
-            resources/TrayIconTemplate.png
+            resources/TrayIconLinux.png
           do
             if [ ! -f "$root/$path" ]; then
               echo "ERROR: missing from payload: $path" >&2
